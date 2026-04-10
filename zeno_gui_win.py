@@ -4,6 +4,7 @@ import threading
 import os
 import sys
 import time
+import re
 
 class HostTerminal(ctk.CTkFrame):
     def __init__(self, master, host, user, password=None, identity=None):
@@ -14,6 +15,9 @@ class HostTerminal(ctk.CTkFrame):
         self.identity = identity
         self.client = None
         self.shell = None
+        
+        # Regex to strip ANSI escape sequences
+        self.ansi_escape = re.compile(r'(?:\x1B[@-_][0-?]*[ -/]*[@-~])')
         
         # Connection Controls
         self.ctrl_frame = ctk.CTkFrame(self)
@@ -111,8 +115,10 @@ class HostTerminal(ctk.CTkFrame):
             self.append_text("[-] Not connected.\n")
 
     def append_text(self, text):
+        # Strip ANSI escape codes for cleaner output
+        cleaned_text = self.ansi_escape.sub('', text)
         self.text_area.configure(state="normal")
-        self.text_area.insert("end", text)
+        self.text_area.insert("end", cleaned_text)
         self.text_area.see("end")
         self.text_area.configure(state="disabled")
 
