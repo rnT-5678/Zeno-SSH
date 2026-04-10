@@ -10,10 +10,25 @@ class HostTerminal(ctk.CTkFrame):
         super().__init__(master)
         self.host = host
         self.user = user
-        self.password = password if password else None
+        self.password = password
         self.identity = identity
         self.client = None
         self.shell = None
+        
+        # Connection Controls
+        self.ctrl_frame = ctk.CTkFrame(self)
+        self.ctrl_frame.pack(fill="x", padx=5, pady=5)
+        
+        self.user_var = ctk.StringVar(value=user)
+        self.user_input = ctk.CTkEntry(self.ctrl_frame, textvariable=self.user_var, width=120)
+        self.user_input.pack(side="left", padx=5)
+        
+        self.pwd_var = ctk.StringVar(value=password if password else "")
+        self.pwd_input = ctk.CTkEntry(self.ctrl_frame, textvariable=self.pwd_var, show="*", placeholder_text="Password", width=120)
+        self.pwd_input.pack(side="left", padx=5)
+        
+        self.conn_btn = ctk.CTkButton(self.ctrl_frame, text="Connect", command=self.start_connection, width=100)
+        self.conn_btn.pack(side="left", padx=5)
         
         self.text_area = ctk.CTkTextbox(self, font=("Courier New", 12), text_color="#2ecc71", fg_color="black")
         self.text_area.pack(fill="both", expand=True, padx=5, pady=5)
@@ -23,10 +38,17 @@ class HostTerminal(ctk.CTkFrame):
         self.entry.bind("<Return>", self.send_command)
         
         self.status_callback = None
+
+    def start_connection(self):
+        self.user = self.user_var.get()
+        self.password = self.pwd_var.get()
+        self.conn_btn.configure(state="disabled", text="Connecting...")
+        threading.Thread(target=self._ssh_thread, daemon=True).start()
         
     def connect(self, status_callback):
         self.status_callback = status_callback
-        threading.Thread(target=self._ssh_thread, daemon=True).start()
+        # We no longer auto-start thread here, wait for button click
+        self.append_text(f"[*] Ready to connect to {self.host}. Click 'Connect' to begin.\n")
         
     def _ssh_thread(self):
         try:
@@ -46,6 +68,7 @@ class HostTerminal(ctk.CTkFrame):
             
             self.shell = self.client.invoke_shell()
             self.append_text(f"[+] Connected successfully!\n")
+            self.conn_btn.configure(text="Connected")
             if self.status_callback:
                 self.status_callback(self.host, "success")
                 
@@ -56,18 +79,22 @@ class HostTerminal(ctk.CTkFrame):
                     self.append_text(data)
                 elif self.shell.exit_status_ready():
                     self.append_text("\n[!] Connection closed by remote host.\n")
+                    self.conn_btn.configure(state="normal", text="Connect")
                     break
                 else:
                     time.sleep(0.01) # Avoid high CPU usage
                     
         except paramiko.AuthenticationException:
             self.append_text("[-] Authentication failed: Please check your username and password.\n")
+            self.conn_btn.configure(state="normal", text="Connect")
             if self.status_callback: self.status_callback(self.host, "error")
         except paramiko.SSHException as e:
             self.append_text(f"[-] SSH Error: {e}\n")
+            self.conn_btn.configure(state="normal", text="Connect")
             if self.status_callback: self.status_callback(self.host, "error")
         except Exception as e:
             self.append_text(f"[-] Connection failed: {type(e).__name__}: {e}\n")
+            self.conn_btn.configure(state="normal", text="Connect")
             if self.status_callback:
                 self.status_callback(self.host, "error")
         finally:
