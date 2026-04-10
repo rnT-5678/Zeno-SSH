@@ -7,3 +7,8 @@ appimage-build/
 *.zsync
 .env
 .gemini/
+
+# Build artifacts
+build/
+archive_project.ps1
+*.log

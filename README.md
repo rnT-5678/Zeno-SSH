@@ -1,4 +1,4 @@
-# Zeno-Zeno-SSH
+# Zeno-SSH
 
 A Python-based suite to manage and execute commands across multiple systems via SSH. It includes both a scriptable CLI and a high-performance interactive GUI.
 
@@ -10,11 +10,13 @@ A Python-based suite to manage and execute commands across multiple systems via 
 *   **Integrated Host Editor**: Update your `hosts.txt` and reconnect without restarting the application.
 *   **Native Linux Integration**: Built with GTK 3 and PyGObject.
 
-### Automation CLI (`src/ssh_admin.py`)
+### Automation CLI (`src/zeno_admin.py`)
 *   **Scriptable Execution**: Parallel or serial command execution across multiple hosts.
 *   **Logging & Sudo**: Built-in logging to `ssh_admin.log` and support for privilege escalation.
 
-## Installation (Debian/Ubuntu)
+## Installation & Usage
+
+### Linux (Debian/Ubuntu)
 
 1. **Install System Dependencies**:
    ```bash
@@ -22,22 +24,24 @@ A Python-based suite to manage and execute commands across multiple systems via 
    sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 openssh-client
    ```
 
-2. **Clone and Install Python Requirements**:
+2. **Install Python Requirements**:
    ```bash
    pip install -r requirements.txt
    ```
 
-## Usage
+3. **Run**:
+   - GUI: `python3 zeno_gui.py`
+   - CLI: `python3 src/zeno_admin.py run "uptime"`
 
-### GUI
-```bash
-python3 zeno_gui.py
-```
+### Windows (Standalone Binaries)
 
-### CLI
-```bash
-python3 src/zeno_admin.py run "uptime" --hosts hosts.txt --user myuser
-```
+For Windows users, pre-compiled standalone binaries are available in the [dist/](./dist/) directory. No Python installation is required.
+
+1. **Download**: Navigate to the `dist/` folder.
+2. **Run GUI**: Double-click `ZenoSSH-Windows.exe`.
+3. **Run CLI**: Use `ZenoSSH-CLI.exe` from PowerShell or Command Prompt.
+
+Refer to the [Windows Documentation](./dist/README.md) for detailed Windows usage instructions.
 
 ## Configuration
 Add your target hosts to `hosts.txt`. You can group them using `[group_name]` syntax.
