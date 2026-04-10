@@ -1,15 +1,16 @@
-import customtkinter as ctk
+import ctk
 import paramiko
 import threading
 import os
 import sys
+import time
 
 class HostTerminal(ctk.CTkFrame):
     def __init__(self, master, host, user, password=None, identity=None):
         super().__init__(master)
         self.host = host
         self.user = user
-        self.password = password
+        self.password = password if password else None
         self.identity = identity
         self.client = None
         self.shell = None
@@ -29,7 +30,7 @@ class HostTerminal(ctk.CTkFrame):
         
     def _ssh_thread(self):
         try:
-            self.append_text(f"[*] Connecting to {self.host}...\n")
+            self.append_text(f"[*] Connecting to {self.host} as {self.user}...\n")
             self.client = paramiko.SSHClient()
             self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             
@@ -38,26 +39,41 @@ class HostTerminal(ctk.CTkFrame):
                 username=self.user,
                 password=self.password,
                 key_filename=self.identity,
-                timeout=10
+                timeout=15,
+                allow_agent=True,
+                look_for_keys=True
             )
             
             self.shell = self.client.invoke_shell()
-            self.append_text(f"[+] Connected!\n")
+            self.append_text(f"[+] Connected successfully!\n")
             if self.status_callback:
                 self.status_callback(self.host, "success")
                 
-            # Read thread
+            # Read thread loop
             while self.shell:
                 if self.shell.recv_ready():
-                    data = self.shell.recv(1024).decode('utf-8', errors='ignore')
+                    data = self.shell.recv(4096).decode('utf-8', errors='ignore')
                     self.append_text(data)
-                if self.shell.exit_status_ready():
+                elif self.shell.exit_status_ready():
+                    self.append_text("\n[!] Connection closed by remote host.\n")
                     break
+                else:
+                    time.sleep(0.01) # Avoid high CPU usage
                     
+        except paramiko.AuthenticationException:
+            self.append_text("[-] Authentication failed: Please check your username and password.\n")
+            if self.status_callback: self.status_callback(self.host, "error")
+        except paramiko.SSHException as e:
+            self.append_text(f"[-] SSH Error: {e}\n")
+            if self.status_callback: self.status_callback(self.host, "error")
         except Exception as e:
-            self.append_text(f"[-] Connection failed: {e}\n")
+            self.append_text(f"[-] Connection failed: {type(e).__name__}: {e}\n")
             if self.status_callback:
                 self.status_callback(self.host, "error")
+        finally:
+            if self.client:
+                # We don't close immediately to keep the text area viewable
+                pass
 
     def send_command(self, event=None):
         cmd = self.entry.get()
