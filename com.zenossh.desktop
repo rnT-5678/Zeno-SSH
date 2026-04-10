@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Zeno-SSH
+Comment=Interactive Multi-SSH Commander & Broadcaster
+Exec=ssh_gui.py
+Icon=zenossh
+Categories=System;TerminalEmulator;Network;
+Terminal=false
+StartupNotify=true
