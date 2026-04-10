@@ -148,30 +148,23 @@ class ZenoSSHWin(ctk.CTk):
         self.main_frame = ctk.CTkFrame(self)
         self.main_frame.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
         self.main_frame.grid_columnconfigure(0, weight=1)
-        self.main_frame.grid_rowconfigure(1, weight=1)
+        self.main_frame.grid_rowconfigure(0, weight=1)
         
-        # Broadcast Bar
+        # Tabs
+        self.tabview = ctk.CTkTabview(self.main_frame)
+        self.tabview.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        self.tabview.add("Config")
+        
+        # Broadcast Bar (At the bottom now)
         self.broadcast_frame = ctk.CTkFrame(self.main_frame)
-        self.broadcast_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+        self.broadcast_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
         
-        self.user_entry = ctk.CTkEntry(self.broadcast_frame, placeholder_text="User", width=100)
-        self.user_entry.pack(side="left", padx=5)
-        self.user_entry.insert(0, os.getlogin() if hasattr(os, 'getlogin') else "user")
-        
-        self.pwd_entry = ctk.CTkEntry(self.broadcast_frame, placeholder_text="Password", show="*", width=100)
-        self.pwd_entry.pack(side="left", padx=5)
-        
-        self.broadcast_entry = ctk.CTkEntry(self.broadcast_frame, placeholder_text="Broadcast command...")
+        self.broadcast_entry = ctk.CTkEntry(self.broadcast_frame, placeholder_text="Broadcast command to all active tabs...")
         self.broadcast_entry.pack(side="left", fill="x", expand=True, padx=5)
         self.broadcast_entry.bind("<Return>", self.broadcast_command)
         
         self.broadcast_btn = ctk.CTkButton(self.broadcast_frame, text="Broadcast", width=100, command=self.broadcast_command)
         self.broadcast_btn.pack(side="left", padx=5)
-        
-        # Tabs
-        self.tabview = ctk.CTkTabview(self.main_frame)
-        self.tabview.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
-        self.tabview.add("Config")
         
         # Config Editor
         self.config_text = ctk.CTkTextbox(self.tabview.tab("Config"), font=("Courier New", 12))
@@ -228,11 +221,10 @@ class ZenoSSHWin(ctk.CTk):
             self.tabview.set(host)
             return
             
-        user = self.user_entry.get()
-        pwd = self.pwd_entry.get()
+        default_user = os.getlogin() if hasattr(os, 'getlogin') else "user"
         
         self.tabview.add(host)
-        term = HostTerminal(self.tabview.tab(host), host, user, pwd)
+        term = HostTerminal(self.tabview.tab(host), host, default_user, "")
         term.pack(fill="both", expand=True)
         self.terminals[host] = term
         self.tabview.set(host)
