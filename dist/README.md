@@ -39,13 +39,19 @@ Open a terminal (Command Prompt or PowerShell) in this directory and run:
 - **Target a specific group**:
   ```
   .\ZenoSSH-CLI.exe run "df -h" --group web-servers --user admin
-  ```- **Use a specific identity key**:
+  ```
+
+- **Use a specific identity key**:
   ```
   .\ZenoSSH-CLI.exe run "ls -la" --identity C:\Users\me\.ssh\id_rsa
-  ```- **Disable parallel execution (run one by one)**:
+  ```
+
+- **Disable parallel execution (run one by one)**:
   ```
   .\ZenoSSH-CLI.exe run "reboot" --no-parallel
-  ```- **Enable logging to a file**:
+  ```
+
+- **Enable logging to a file**:
   ```
   .\ZenoSSH-CLI.exe run "tail /var/log/syslog" --log
   ```
