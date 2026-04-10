@@ -88,9 +88,21 @@ def cli():
     """Zeno-SSH - Manage and execute commands across multiple systems."""
     pass
 
+def get_default_hosts_path():
+    """Get the path to hosts.txt in the same directory as the script/executable."""
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Try current directory first, then fallback to executable directory
+    if os.path.exists("hosts.txt"):
+        return "hosts.txt"
+    return os.path.join(base_dir, "hosts.txt")
+
 @cli.command()
 @click.argument('command')
-@click.option('--hosts', '-h', default='hosts.txt', help='Path to the host list file.')
+@click.option('--hosts', '-h', help='Path to the host list file.')
 @click.option('--group', '-g', default='all', help='Target a specific group of hosts.')
 @click.option('--user', '-u', help='SSH username (optional).')
 @click.option('--password', '-p', help='SSH password (optional).')
@@ -103,6 +115,9 @@ def cli():
 def run(command, hosts, group, user, password, ask_pass, identity, sudo, parallel, log_enabled, log_file):
     """Run a command on all hosts (or a specific group) in the list."""
     try:
+        if not hosts:
+            hosts = get_default_hosts_path()
+            
         all_groups = parse_hosts(hosts)
         if group not in all_groups:
             click.echo(Fore.RED + f"Error: Group '{group}' not found in {hosts}")

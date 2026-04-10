@@ -130,16 +130,32 @@ class ZenoSSHWin(ctk.CTk):
         self.save_btn = ctk.CTkButton(self.tabview.tab("Config"), text="Save & Reload", command=self.save_hosts)
         self.save_btn.pack(pady=10)
         
+        # Get the directory where the script or executable is located
+        if getattr(sys, 'frozen', False):
+            self.base_dir = os.path.dirname(sys.executable)
+        else:
+            self.base_dir = os.path.dirname(os.path.abspath(__file__))
+            
+        self.hosts_path = os.path.join(self.base_dir, "hosts.txt")
+        
         self.terminals = {}
+        self.ensure_hosts_file()
         self.load_hosts()
+
+    def ensure_hosts_file(self):
+        """Creates a default hosts.txt if it doesn't exist."""
+        if not os.path.exists(self.hosts_path):
+            default_content = "[web-servers]\n# example-01.com\n127.0.0.1\n\n[database]\n# 10.0.0.5\n"
+            with open(self.hosts_path, "w") as f:
+                f.write(default_content)
 
     def load_hosts(self):
         # Clear host list frame
         for widget in self.host_list_frame.winfo_children():
             widget.destroy()
             
-        if os.path.exists("hosts.txt"):
-            with open("hosts.txt", "r") as f:
+        if os.path.exists(self.hosts_path):
+            with open(self.hosts_path, "r") as f:
                 content = f.read()
                 self.config_text.delete("1.0", "end")
                 self.config_text.insert("1.0", content)
@@ -154,7 +170,7 @@ class ZenoSSHWin(ctk.CTk):
 
     def save_hosts(self):
         content = self.config_text.get("1.0", "end-1c")
-        with open("hosts.txt", "w") as f:
+        with open(self.hosts_path, "w") as f:
             f.write(content)
         self.load_hosts()
 
