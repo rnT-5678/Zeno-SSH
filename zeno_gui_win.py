@@ -1,4 +1,4 @@
-import ctk
+import customtkinter as ctk
 import paramiko
 import threading
 import os
