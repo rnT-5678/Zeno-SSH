@@ -7,28 +7,58 @@ gi.require_version('Vte', '2.91')
 gi.require_version('Pango', '1.0')
 from gi.repository import Gtk, Vte, GLib, Gdk, Pango
 
-class HostTerminal(Vte.Terminal):
+class HostTerminal(Gtk.Box):
     def __init__(self, host, parent_gui):
-        super().__init__()
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.host = host
         self.parent_gui = parent_gui
         self.started = False
-        self.set_scrollback_lines(10000)
-        self.set_font(Pango.FontDescription.from_string("monospace 10"))
         
-        # Style like a terminal
-        self.set_color_foreground(Gdk.RGBA(0, 1, 0, 1)) # Green
-        self.set_color_background(Gdk.RGBA(0, 0, 0, 1)) # Black
+        # Connection Controls
+        ctrl_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        ctrl_box.set_margin_top(5); ctrl_box.set_margin_bottom(5)
+        ctrl_box.set_margin_start(5); ctrl_box.set_margin_end(5)
+        self.pack_start(ctrl_box, False, False, 0)
+        
+        self.user_entry = Gtk.Entry()
+        self.user_entry.set_width_chars(12)
+        self.user_entry.set_text(os.getlogin() if hasattr(os, 'getlogin') else "user")
+        ctrl_box.pack_start(self.user_entry, False, False, 0)
+        
+        self.pwd_entry = Gtk.Entry()
+        self.pwd_entry.set_width_chars(12)
+        self.pwd_entry.set_visibility(False)
+        self.pwd_entry.set_placeholder_text("Password")
+        ctrl_box.pack_start(self.pwd_entry, False, False, 0)
+        
+        self.conn_btn = Gtk.Button(label="Connect")
+        self.conn_btn.connect("clicked", lambda x: self.start_shell())
+        ctrl_box.pack_start(self.conn_btn, False, False, 0)
+
+        # Scrolled Window to wrap VTE Terminal
+        scrolled = Gtk.ScrolledWindow()
+        self.terminal = Vte.Terminal()
+        self.terminal.set_scrollback_lines(10000)
+        self.terminal.set_font(Pango.FontDescription.from_string("monospace 10"))
+        self.terminal.set_color_foreground(Gdk.RGBA(0, 1, 0, 1)) # Green
+        self.terminal.set_color_background(Gdk.RGBA(0, 0, 0, 1)) # Black
+        
+        scrolled.add(self.terminal)
+        self.pack_start(scrolled, True, True, 0)
 
     def start_shell(self):
         if self.started:
             return
         self.started = True
-        user = self.parent_gui.user_entry.get_text()
-        # Remove BatchMode=yes to allow for interactive password prompts
+        self.conn_btn.set_sensitive(False)
+        self.conn_btn.set_label("Connecting...")
+        
+        user = self.user_entry.get_text()
+        # ssh-askpass fallback or use expect if we wanted automation, 
+        # but here we rely on the terminal's native password prompt support
         ssh_cmd = ["/usr/bin/ssh", "-t", f"{user}@{self.host}", "bash"]
         
-        self.spawn_async(
+        self.terminal.spawn_async(
             Vte.PtyFlags.DEFAULT,
             os.getcwd(),
             ssh_cmd,
@@ -45,17 +75,30 @@ class HostTerminal(Vte.Terminal):
         if error:
             print(f"Error spawning for {self.host}: {error.message}")
             self.parent_gui.update_host_status(self.host, "error")
+            self.conn_btn.set_sensitive(True)
+            self.conn_btn.set_label("Connect")
+            self.started = False
         else:
             self.parent_gui.update_host_status(self.host, "success")
+            self.conn_btn.set_label("Connected")
             # Connect the child-exited signal to handle disconnects
-            self.connect("child-exited", self.on_child_exited)
+            self.terminal.connect("child-exited", self.on_child_exited)
+            
+            # Send password if provided
+            pwd = self.pwd_entry.get_text()
+            if pwd:
+                GLib.timeout_add(1000, self.send_string, pwd + "\n")
 
     def on_child_exited(self, terminal, status):
         self.parent_gui.update_host_status(self.host, "error")
+        self.conn_btn.set_sensitive(True)
+        self.conn_btn.set_label("Connect")
+        self.started = False
 
     def send_string(self, text):
         """Sends raw text to the shell's stdin."""
-        self.feed_child(text.encode('utf-8'))
+        self.terminal.feed_child(text.encode('utf-8'))
+        return False
 
 class SSHGui(Gtk.Window):
     def __init__(self):
@@ -108,26 +151,16 @@ class SSHGui(Gtk.Window):
         main_content.set_margin_end(10)
         self.paned.pack2(main_content, True, False)
 
-        # Broadcast Bar
+        # Notebook (Tabs)
+        self.notebook = Gtk.Notebook()
+        self.notebook.set_scrollable(True)
+        # self.notebook.connect("switch-page", self.on_tab_switched) # Removed auto-start
+        main_content.pack_start(self.notebook, True, True, 0)
+
+        # Broadcast Bar (Bottom)
         b_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         b_box.get_style_context().add_class("broadcast-bar")
         main_content.pack_start(b_box, False, False, 0)
-
-        self.user_entry = Gtk.Entry()
-        self.user_entry.set_width_chars(8)
-        self.user_entry.set_text(os.getlogin() if hasattr(os, 'getlogin') else "user")
-        self.user_entry.set_placeholder_text("User")
-        b_box.pack_start(self.user_entry, False, False, 0)
-
-        self.password_entry = Gtk.Entry()
-        self.password_entry.set_width_chars(8)
-        self.password_entry.set_visibility(False)
-        self.password_entry.set_placeholder_text("Password")
-        b_box.pack_start(self.password_entry, False, False, 0)
-
-        p_btn = Gtk.Button(label="Send Pwd")
-        p_btn.connect("clicked", self.on_send_password)
-        b_box.pack_start(p_btn, False, False, 0)
 
         # Group Selector
         self.group_combo = Gtk.ComboBoxText()
@@ -143,12 +176,6 @@ class SSHGui(Gtk.Window):
         b_btn = Gtk.Button(label="Broadcast All")
         b_btn.connect("clicked", self.on_broadcast)
         b_box.pack_start(b_btn, False, False, 0)
-
-        # Notebook (Tabs)
-        self.notebook = Gtk.Notebook()
-        self.notebook.set_scrollable(True)
-        self.notebook.connect("switch-page", self.on_tab_switched)
-        main_content.pack_start(self.notebook, True, True, 0)
 
         # Permanent Editor Tab
         self.editor_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
@@ -171,94 +198,15 @@ class SSHGui(Gtk.Window):
         self.refresh_host_list()
         self.apply_styles()
 
-    def on_tab_switched(self, notebook, page, page_num):
-        # page is the ScrolledWindow
-        term = page.get_child()
-        if isinstance(term, HostTerminal):
-            term.start_shell()
-
-    def set_margin_all(self, widget, val):
-        widget.set_margin_top(val)
-        widget.set_margin_bottom(val)
-        widget.set_margin_start(val)
-        widget.set_margin_end(val)
-
-    def apply_styles(self):
-        css = b"""
-            .broadcast-bar { background-color: #2c3e50; padding: 10px; border-radius: 5px; }
-            .tab-label-running { color: #3498db; font-weight: bold; }
-            .tab-label-error { color: #e74c3c; font-weight: bold; }
-            .tab-label-success { color: #2ecc71; font-weight: bold; }
-            .tab-label-idle { color: #555; }
-        """
-        provider = Gtk.CssProvider()
-        provider.load_from_data(css)
-        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-
-    def load_hosts_into_editor(self):
-        if os.path.exists("hosts.txt"):
-            with open("hosts.txt", "r") as f:
-                self.host_text_view.get_buffer().set_text(f.read())
-
-    def on_save_hosts(self, btn):
-        buf = self.host_text_view.get_buffer()
-        content = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True)
-        with open("hosts.txt", "w") as f: f.write(content)
-        self.refresh_host_list()
-
-    def refresh_host_list(self):
-        """Refreshes the sidebar tree and group combo based on hosts.txt."""
-        self.tree_store.clear()
-        self.host_groups = {}
-        
-        self.group_combo.remove_all()
-        self.group_combo.append_text("All Groups")
-        self.group_combo.set_active(0)
-        found_groups = set()
-
-        if os.path.exists("hosts.txt"):
-            current_group = "all"
-            group_iter = None
-            
-            with open("hosts.txt", "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    
-                    if line.startswith("[") and line.endswith("]"):
-                        current_group = line[1:-1]
-                        group_iter = self.tree_store.append(None, [current_group, "group"])
-                        if current_group not in found_groups:
-                            self.group_combo.append_text(current_group)
-                            found_groups.add(current_group)
-                        continue
-
-                    host = line
-                    self.host_groups[host] = current_group
-                    self.tree_store.append(group_iter, [host, "host"])
-
-    def on_tree_item_activated(self, tree_view, path, column):
-        model = tree_view.get_model()
-        iter = model.get_iter(path)
-        label, type = model.get(iter, 0, 1)
-        
-        if type == "host":
-            self.add_host_tab(label)
-
     def add_host_tab(self, host):
         """Adds a terminal tab for a host if it doesn't already exist."""
         if host in self.host_widgets:
             # Switch to existing tab
             term = self.host_widgets[host]
-            page_num = self.notebook.page_num(term.get_parent())
-            self.notebook.set_current_page(page_num)
+            self.notebook.set_current_page(self.notebook.page_num(term))
             return
 
-        # Scrolled Window to wrap VTE Terminal
-        scrolled = Gtk.ScrolledWindow()
         term = HostTerminal(host, self)
-        scrolled.add(term)
         
         # Tab Label with status dot and group
         group = self.host_groups.get(host, "all")
@@ -277,7 +225,7 @@ class SSHGui(Gtk.Window):
         
         lbl_box.show_all()
         
-        new_index = self.notebook.append_page(scrolled, lbl_box)
+        new_index = self.notebook.append_page(term, lbl_box)
         self.host_widgets[host] = term
         self.tab_labels[host] = dot
         self.notebook.show_all()
@@ -286,8 +234,7 @@ class SSHGui(Gtk.Window):
     def close_tab(self, host):
         if host in self.host_widgets:
             term = self.host_widgets[host]
-            scrolled = term.get_parent()
-            page_num = self.notebook.page_num(scrolled)
+            page_num = self.notebook.page_num(term)
             self.notebook.remove_page(page_num)
             del self.host_widgets[host]
             del self.tab_labels[host]
@@ -314,17 +261,6 @@ class SSHGui(Gtk.Window):
         for host, term in self.host_widgets.items():
             if term.started and (selected_group == "All Groups" or self.host_groups.get(host) == selected_group):
                 term.send_string(cmd + "\n")
-
-    def on_send_password(self, btn):
-        pwd = self.password_entry.get_text()
-        if not pwd: return
-        self.password_entry.set_text("")
-        
-        selected_group = self.group_combo.get_active_text()
-        
-        for host, term in self.host_widgets.items():
-            if term.started and (selected_group == "All Groups" or self.host_groups.get(host) == selected_group):
-                term.send_string(pwd + "\n")
 
 if __name__ == "__main__":
     win = SSHGui()
