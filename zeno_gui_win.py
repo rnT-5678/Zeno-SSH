@@ -16,8 +16,16 @@ class HostTerminal(ctk.CTkFrame):
         self.client = None
         self.shell = None
         
-        # Regex to strip ANSI escape sequences
-        self.ansi_escape = re.compile(r'(?:\x1B[@-_][0-?]*[ -/]*[@-~])')
+        # Regex to find ANSI escape sequences
+        self.ansi_escape = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
+        
+        # Define color map for common ANSI codes
+        self.color_map = {
+            '30': 'black', '31': '#e74c3c', '32': '#2ecc71', '33': '#f1c40f',
+            '34': '#3498db', '35': '#9b59b6', '36': '#1abc9c', '37': '#ecf0f1',
+            '90': '#95a5a6', '91': '#ff6b6b', '92': '#51cf66', '93': '#fcc419',
+            '94': '#339af0', '95': '#cc5de8', '96': '#22b8cf', '97': '#f8f9fa'
+        }
         
         # Connection Controls
         self.ctrl_frame = ctk.CTkFrame(self)
@@ -34,9 +42,14 @@ class HostTerminal(ctk.CTkFrame):
         self.conn_btn = ctk.CTkButton(self.ctrl_frame, text="Connect", command=self.start_connection, width=100)
         self.conn_btn.pack(side="left", padx=5)
         
-        self.text_area = ctk.CTkTextbox(self, font=("Courier New", 12), text_color="#2ecc71", fg_color="black")
+        self.text_area = ctk.CTkTextbox(self, font=("Courier New", 12), text_color="#ecf0f1", fg_color="black")
         self.text_area.pack(fill="both", expand=True, padx=5, pady=5)
         
+        # Setup tags for colors
+        for code, color in self.color_map.items():
+            self.text_area._textbox.tag_config(f"color_{code}", foreground=color)
+        self.current_tag = None
+
         self.entry = ctk.CTkEntry(self, placeholder_text="Enter command...")
         self.entry.pack(fill="x", padx=5, pady=5)
         self.entry.bind("<Return>", self.send_command)
@@ -51,7 +64,6 @@ class HostTerminal(ctk.CTkFrame):
         
     def connect(self, status_callback):
         self.status_callback = status_callback
-        # We no longer auto-start thread here, wait for button click
         self.append_text(f"[*] Ready to connect to {self.host}. Click 'Connect' to begin.\n")
         
     def _ssh_thread(self):
@@ -70,41 +82,28 @@ class HostTerminal(ctk.CTkFrame):
                 look_for_keys=True
             )
             
-            self.shell = self.client.invoke_shell()
+            # Request a terminal that supports color
+            self.shell = self.client.invoke_shell(term='xterm-256color', width=120, height=40)
             self.append_text(f"[+] Connected successfully!\n")
             self.conn_btn.configure(text="Connected")
             if self.status_callback:
                 self.status_callback(self.host, "success")
                 
-            # Read thread loop
             while self.shell:
                 if self.shell.recv_ready():
-                    data = self.shell.recv(4096).decode('utf-8', errors='ignore')
+                    data = self.shell.recv(8192).decode('utf-8', errors='ignore')
                     self.append_text(data)
                 elif self.shell.exit_status_ready():
                     self.append_text("\n[!] Connection closed by remote host.\n")
                     self.conn_btn.configure(state="normal", text="Connect")
                     break
                 else:
-                    time.sleep(0.01) # Avoid high CPU usage
+                    time.sleep(0.01)
                     
-        except paramiko.AuthenticationException:
-            self.append_text("[-] Authentication failed: Please check your username and password.\n")
-            self.conn_btn.configure(state="normal", text="Connect")
-            if self.status_callback: self.status_callback(self.host, "error")
-        except paramiko.SSHException as e:
-            self.append_text(f"[-] SSH Error: {e}\n")
-            self.conn_btn.configure(state="normal", text="Connect")
-            if self.status_callback: self.status_callback(self.host, "error")
         except Exception as e:
-            self.append_text(f"[-] Connection failed: {type(e).__name__}: {e}\n")
+            self.append_text(f"[-] Connection failed: {e}\n")
             self.conn_btn.configure(state="normal", text="Connect")
-            if self.status_callback:
-                self.status_callback(self.host, "error")
-        finally:
-            if self.client:
-                # We don't close immediately to keep the text area viewable
-                pass
+            if self.status_callback: self.status_callback(self.host, "error")
 
     def send_command(self, event=None):
         cmd = self.entry.get()
@@ -115,10 +114,28 @@ class HostTerminal(ctk.CTkFrame):
             self.append_text("[-] Not connected.\n")
 
     def append_text(self, text):
-        # Strip ANSI escape codes for cleaner output
-        cleaned_text = self.ansi_escape.sub('', text)
         self.text_area.configure(state="normal")
-        self.text_area.insert("end", cleaned_text)
+        
+        # Simple ANSI parser
+        parts = self.ansi_escape.split(text)
+        matches = self.ansi_escape.findall(text)
+        
+        for i, part in enumerate(parts):
+            if part:
+                if self.current_tag:
+                    self.text_area.insert("end", part, self.current_tag)
+                else:
+                    self.text_area.insert("end", part)
+            
+            if i < len(matches):
+                code_match = re.search(r'\[(\d+)(?:;\d+)*m', matches[i])
+                if code_match:
+                    code = code_match.group(1)
+                    if code == '0':
+                        self.current_tag = None
+                    elif code in self.color_map:
+                        self.current_tag = f"color_{code}"
+        
         self.text_area.see("end")
         self.text_area.configure(state="disabled")
 
