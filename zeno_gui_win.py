@@ -1,5 +1,6 @@
 import customtkinter as ctk
 import paramiko
+from scp import SCPClient
 import threading
 import os
 import sys
@@ -74,6 +75,14 @@ class HostTerminal(ctk.CTkFrame):
         ctk.CTkLabel(self.sftp_frame, text="Remote Path:").pack(anchor="w")
         self.remote_path = ctk.CTkEntry(self.sftp_frame, placeholder_text="/home/user/remote_file")
         self.remote_path.pack(fill="x", pady=(0, 10))
+        
+        ctk.CTkLabel(self.sftp_frame, text="Protocol:").pack(anchor="w")
+        self.protocol_var = ctk.StringVar(value="SFTP")
+        protocol_box = ctk.CTkFrame(self.sftp_frame, fg_color="transparent")
+        protocol_box.pack(fill="x", pady=(0, 10))
+        
+        ctk.CTkRadioButton(protocol_box, text="SFTP", variable=self.protocol_var, value="SFTP").pack(side="left", padx=10)
+        ctk.CTkRadioButton(protocol_box, text="SCP", variable=self.protocol_var, value="SCP").pack(side="left", padx=10)
         
         btn_box = ctk.CTkFrame(self.sftp_frame, fg_color="transparent")
         btn_box.pack(fill="x")
@@ -162,23 +171,28 @@ class HostTerminal(ctk.CTkFrame):
         threading.Thread(target=self._sftp_thread, args=(op_type, local, remote), daemon=True).start()
 
     def _sftp_thread(self, op_type, local, remote):
+        protocol = self.protocol_var.get()
         try:
-            self.log_sftp(f"[*] Starting {op_type}...")
-            sftp = self.client.open_sftp()
+            self.log_sftp(f"[*] Starting {op_type} via {protocol}...")
             
-            def progress(seen, total):
-                # We could update a progress bar here
-                pass
-
-            if op_type == "upload":
-                sftp.put(local, remote, callback=progress)
+            if protocol == "SFTP":
+                sftp = self.client.open_sftp()
+                if op_type == "upload":
+                    sftp.put(local, remote)
+                else:
+                    sftp.get(remote, local)
+                sftp.close()
             else:
-                sftp.get(remote, local, callback=progress)
+                # SCP Implementation
+                with SCPClient(self.client.get_transport()) as scp:
+                    if op_type == "upload":
+                        scp.put(local, recursive=True, remote_path=remote)
+                    else:
+                        scp.get(remote, local_path=local, recursive=True)
                 
-            sftp.close()
             self.log_sftp(f"[+] {op_type.capitalize()} complete!")
         except Exception as e:
-            self.log_sftp(f"[-] SFTP Error: {e}")
+            self.log_sftp(f"[-] {protocol} Error: {e}")
 
     def browse_local_file(self):
         filename = ctk.filedialog.askopenfilename()
