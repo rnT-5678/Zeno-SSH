@@ -17,16 +17,12 @@ class HostTerminal(ctk.CTkFrame):
         self.client = None
         self.shell = None
         
-        # Regex to find ANSI escape sequences
-        self.ansi_escape = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
+        # Enhanced Regex to catch more artifacts like OSC sequences (]0;...)
+        self.ansi_escape = re.compile(r'(?:\x1B[@-_][0-?]*[ -/]*[@-~])|(?:\x1B\][0-9]*;.*?\x07)')
         
-        # Define color map for common ANSI codes
-        self.color_map = {
-            '30': 'black', '31': '#e74c3c', '32': '#2ecc71', '33': '#f1c40f',
-            '34': '#3498db', '35': '#9b59b6', '36': '#1abc9c', '37': '#ecf0f1',
-            '90': '#95a5a6', '91': '#ff6b6b', '92': '#51cf66', '93': '#fcc419',
-            '94': '#339af0', '95': '#cc5de8', '96': '#22b8cf', '97': '#f8f9fa'
-        }
+        # History
+        self.history = []
+        self.history_index = -1
         
         # Connection Controls
         self.ctrl_frame = ctk.CTkFrame(self)
@@ -39,6 +35,7 @@ class HostTerminal(ctk.CTkFrame):
         self.pwd_var = ctk.StringVar(value=password if password else "")
         self.pwd_input = ctk.CTkEntry(self.ctrl_frame, textvariable=self.pwd_var, show="*", placeholder_text="Password", width=120)
         self.pwd_input.pack(side="left", padx=5)
+        self.pwd_input.bind("<Return>", lambda e: self.start_connection())
         
         self.conn_btn = ctk.CTkButton(self.ctrl_frame, text="Connect", command=self.start_connection, width=100)
         self.conn_btn.pack(side="left", padx=5)
@@ -49,13 +46,17 @@ class HostTerminal(ctk.CTkFrame):
         self.tab_container.add("Terminal")
         self.tab_container.add("File Transfer")
         
-        # Terminal Tab (Move existing UI here)
+        # Terminal Tab
         self.text_area = ctk.CTkTextbox(self.tab_container.tab("Terminal"), font=("Courier New", 12), text_color="#ecf0f1", fg_color="black")
         self.text_area.pack(fill="both", expand=True, padx=5, pady=5)
+        # Auto-focus entry when clicking text area
+        self.text_area.bind("<Button-1>", lambda e: self.entry.focus_set())
         
         self.entry = ctk.CTkEntry(self.tab_container.tab("Terminal"), placeholder_text="Enter command...")
         self.entry.pack(fill="x", padx=5, pady=5)
         self.entry.bind("<Return>", self.send_command)
+        self.entry.bind("<Up>", self.navigate_history)
+        self.entry.bind("<Down>", self.navigate_history)
 
         # File Transfer Tab
         self.sftp_frame = ctk.CTkFrame(self.tab_container.tab("File Transfer"))
@@ -202,11 +203,26 @@ class HostTerminal(ctk.CTkFrame):
 
     def send_command(self, event=None):
         cmd = self.entry.get()
+        if not cmd: return
+        
         if self.shell:
             self.shell.send(cmd + "\n")
+            self.history.append(cmd)
+            self.history_index = len(self.history)
             self.entry.delete(0, 'end')
         else:
             self.append_text("[-] Not connected.\n")
+
+    def navigate_history(self, event):
+        if not self.history: return
+        if event.keysym == "Up":
+            self.history_index = max(0, self.history_index - 1)
+        elif event.keysym == "Down":
+            self.history_index = min(len(self.history), self.history_index + 1)
+            
+        self.entry.delete(0, 'end')
+        if 0 <= self.history_index < len(self.history):
+            self.entry.insert(0, self.history[self.history_index])
 
     def append_text(self, text):
         if not text: return
@@ -257,9 +273,14 @@ class ZenoSSHWin(ctk.CTk):
         self.broadcast_frame = ctk.CTkFrame(self.main_frame)
         self.broadcast_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
         
+        self.b_history = []
+        self.b_history_index = -1
+        
         self.broadcast_entry = ctk.CTkEntry(self.broadcast_frame, placeholder_text="Broadcast command to all active tabs...")
         self.broadcast_entry.pack(side="left", fill="x", expand=True, padx=5)
         self.broadcast_entry.bind("<Return>", self.broadcast_command)
+        self.broadcast_entry.bind("<Up>", self.navigate_broadcast_history)
+        self.broadcast_entry.bind("<Down>", self.navigate_broadcast_history)
         
         self.broadcast_btn = ctk.CTkButton(self.broadcast_frame, text="Broadcast", width=100, command=self.broadcast_command)
         self.broadcast_btn.pack(side="left", padx=5)
@@ -335,9 +356,24 @@ class ZenoSSHWin(ctk.CTk):
     def broadcast_command(self, event=None):
         cmd = self.broadcast_entry.get()
         if not cmd: return
+        
+        self.b_history.append(cmd)
+        self.b_history_index = len(self.b_history)
+        
         for term in self.terminals.values():
             term.send_command_manual(cmd)
         self.broadcast_entry.delete(0, 'end')
+
+    def navigate_broadcast_history(self, event):
+        if not self.b_history: return
+        if event.keysym == "Up":
+            self.b_history_index = max(0, self.b_history_index - 1)
+        elif event.keysym == "Down":
+            self.b_history_index = min(len(self.b_history), self.b_history_index + 1)
+            
+        self.broadcast_entry.delete(0, 'end')
+        if 0 <= self.b_history_index < len(self.b_history):
+            self.broadcast_entry.insert(0, self.b_history[self.b_history_index])
 
     # Add helper for manual send
     def send_command_to_term(self, host, cmd):
