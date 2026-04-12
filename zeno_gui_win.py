@@ -42,17 +42,46 @@ class HostTerminal(ctk.CTkFrame):
         self.conn_btn = ctk.CTkButton(self.ctrl_frame, text="Connect", command=self.start_connection, width=100)
         self.conn_btn.pack(side="left", padx=5)
         
-        self.text_area = ctk.CTkTextbox(self, font=("Courier New", 12), text_color="#ecf0f1", fg_color="black")
+        # Tabs
+        self.tab_container = ctk.CTkTabview(self)
+        self.tab_container.pack(fill="both", expand=True, padx=5, pady=5)
+        self.tab_container.add("Terminal")
+        self.tab_container.add("File Transfer")
+        
+        # Terminal Tab (Move existing UI here)
+        self.text_area = ctk.CTkTextbox(self.tab_container.tab("Terminal"), font=("Courier New", 12), text_color="#ecf0f1", fg_color="black")
         self.text_area.pack(fill="both", expand=True, padx=5, pady=5)
         
-        # Setup tags for colors
-        for code, color in self.color_map.items():
-            self.text_area._textbox.tag_config(f"color_{code}", foreground=color)
-        self.current_tag = None
-
-        self.entry = ctk.CTkEntry(self, placeholder_text="Enter command...")
+        self.entry = ctk.CTkEntry(self.tab_container.tab("Terminal"), placeholder_text="Enter command...")
         self.entry.pack(fill="x", padx=5, pady=5)
         self.entry.bind("<Return>", self.send_command)
+
+        # File Transfer Tab
+        self.sftp_frame = ctk.CTkFrame(self.tab_container.tab("File Transfer"))
+        self.sftp_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        ctk.CTkLabel(self.sftp_frame, text="Local Path:").pack(anchor="w")
+        self.local_path = ctk.CTkEntry(self.sftp_frame, placeholder_text="C:/path/to/local/file")
+        self.local_path.pack(fill="x", pady=(0, 10))
+        
+        ctk.CTkLabel(self.sftp_frame, text="Remote Path:").pack(anchor="w")
+        self.remote_path = ctk.CTkEntry(self.sftp_frame, placeholder_text="/home/user/remote_file")
+        self.remote_path.pack(fill="x", pady=(0, 10))
+        
+        btn_box = ctk.CTkFrame(self.sftp_frame, fg_color="transparent")
+        btn_box.pack(fill="x")
+        
+        self.upload_btn = ctk.CTkButton(btn_box, text="Upload (Put)", command=lambda: self.sftp_op("upload"), width=120)
+        self.upload_btn.pack(side="left", padx=5)
+        
+        self.download_btn = ctk.CTkButton(btn_box, text="Download (Get)", command=lambda: self.sftp_op("download"), width=120)
+        self.download_btn.pack(side="left", padx=5)
+        
+        self.sftp_log = ctk.CTkTextbox(self.sftp_frame, height=150, font=("Courier New", 11))
+        self.sftp_log.pack(fill="both", expand=True, pady=10)
+        self.sftp_log.configure(state="disabled")
+
+        # Setup tags for colors (Rest of existing init...)
         
         self.status_callback = None
 
@@ -104,6 +133,45 @@ class HostTerminal(ctk.CTkFrame):
             self.append_text(f"[-] Connection failed: {e}\n")
             self.conn_btn.configure(state="normal", text="Connect")
             if self.status_callback: self.status_callback(self.host, "error")
+
+    def log_sftp(self, msg):
+        self.sftp_log.configure(state="normal")
+        self.sftp_log.insert("end", f"{msg}\n")
+        self.sftp_log.see("end")
+        self.sftp_log.configure(state="disabled")
+
+    def sftp_op(self, op_type):
+        if not self.client:
+            self.log_sftp("[-] Error: Connect via SSH first.")
+            return
+            
+        local = self.local_path.get().strip()
+        remote = self.remote_path.get().strip()
+        
+        if not local or not remote:
+            self.log_sftp("[-] Error: Provide both local and remote paths.")
+            return
+            
+        threading.Thread(target=self._sftp_thread, args=(op_type, local, remote), daemon=True).start()
+
+    def _sftp_thread(self, op_type, local, remote):
+        try:
+            self.log_sftp(f"[*] Starting {op_type}...")
+            sftp = self.client.open_sftp()
+            
+            def progress(seen, total):
+                # We could update a progress bar here
+                pass
+
+            if op_type == "upload":
+                sftp.put(local, remote, callback=progress)
+            else:
+                sftp.get(remote, local, callback=progress)
+                
+            sftp.close()
+            self.log_sftp(f"[+] {op_type.capitalize()} complete!")
+        except Exception as e:
+            self.log_sftp(f"[-] SFTP Error: {e}")
 
     def send_command(self, event=None):
         cmd = self.entry.get()
