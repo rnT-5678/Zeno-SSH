@@ -61,8 +61,15 @@ class HostTerminal(ctk.CTkFrame):
         self.sftp_frame.pack(fill="both", expand=True, padx=10, pady=10)
         
         ctk.CTkLabel(self.sftp_frame, text="Local Path:").pack(anchor="w")
-        self.local_path = ctk.CTkEntry(self.sftp_frame, placeholder_text="C:/path/to/local/file")
-        self.local_path.pack(fill="x", pady=(0, 10))
+        
+        local_path_box = ctk.CTkFrame(self.sftp_frame, fg_color="transparent")
+        local_path_box.pack(fill="x", pady=(0, 10))
+        
+        self.local_path = ctk.CTkEntry(local_path_box, placeholder_text="C:/path/to/local/file")
+        self.local_path.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        
+        self.browse_btn = ctk.CTkButton(local_path_box, text="Browse...", width=80, command=self.browse_local_file)
+        self.browse_btn.pack(side="left")
         
         ctk.CTkLabel(self.sftp_frame, text="Remote Path:").pack(anchor="w")
         self.remote_path = ctk.CTkEntry(self.sftp_frame, placeholder_text="/home/user/remote_file")
@@ -173,6 +180,12 @@ class HostTerminal(ctk.CTkFrame):
         except Exception as e:
             self.log_sftp(f"[-] SFTP Error: {e}")
 
+    def browse_local_file(self):
+        filename = ctk.filedialog.askopenfilename()
+        if filename:
+            self.local_path.delete(0, 'end')
+            self.local_path.insert(0, filename)
+
     def send_command(self, event=None):
         cmd = self.entry.get()
         if self.shell:
@@ -182,50 +195,14 @@ class HostTerminal(ctk.CTkFrame):
             self.append_text("[-] Not connected.\n")
 
     def append_text(self, text):
+        if not text: return
         self.text_area.configure(state="normal")
         
-        # If no ANSI codes, just insert and return
-        if not self.ansi_escape.search(text):
-            if self.current_tag:
-                self.text_area.insert("end", text, self.current_tag)
-            else:
-                self.text_area.insert("end", text)
-            self.text_area.see("end")
-            self.text_area.configure(state="disabled")
-            return
-
-        # Improved ANSI parser
-        last_pos = 0
-        for match in self.ansi_escape.finditer(text):
-            # Insert text before the match
-            start, end = match.span()
-            chunk = text[last_pos:start]
-            if chunk:
-                if self.current_tag:
-                    self.text_area.insert("end", chunk, self.current_tag)
-                else:
-                    self.text_area.insert("end", chunk)
-            
-            # Process the ANSI code
-            code_str = match.group()
-            code_match = re.search(r'\[(\d+)(?:;\d+)*m', code_str)
-            if code_match:
-                code = code_match.group(1)
-                if code == '0':
-                    self.current_tag = None
-                elif code in self.color_map:
-                    self.current_tag = f"color_{code}"
-            
-            last_pos = end
-            
-        # Insert remaining text
-        remaining = text[last_pos:]
-        if remaining:
-            if self.current_tag:
-                self.text_area.insert("end", remaining, self.current_tag)
-            else:
-                self.text_area.insert("end", remaining)
+        # Simple insertion without complex ANSI parsing for now
+        # Strips ANSI codes to ensure visibility
+        clean_text = self.ansi_escape.sub('', text)
         
+        self.text_area.insert("end", clean_text)
         self.text_area.see("end")
         self.text_area.configure(state="disabled")
 
