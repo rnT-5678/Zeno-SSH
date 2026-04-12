@@ -159,5 +159,74 @@ def run(command, hosts, group, user, password, ask_pass, identity, sudo, paralle
     except Exception as e:
         click.echo(Fore.RED + f"An unexpected error occurred: {e}")
 
-if __name__ == '__main__':
-    cli()
+@cli.command()
+@click.argument('local_path')
+@click.argument('remote_path')
+@click.option('--hosts', '-h', help='Path to the host list file.')
+@click.option('--group', '-g', default='all', help='Target a specific group.')
+@click.option('--user', '-u', help='SSH username.')
+@click.option('--password', '-p', help='SSH password.')
+@click.option('--ask-pass', is_flag=True, help='Prompt for SSH password.')
+@click.option('--identity', '-i', type=click.Path(exists=True), help='Path to private key.')
+def put(local_path, remote_path, hosts, group, user, password, ask_pass, identity):
+    """Upload a file to multiple hosts."""
+    try:
+        if not hosts: hosts = get_default_hosts_path()
+        all_groups = parse_hosts(hosts)
+        targets = all_groups.get(group, []) if group != 'all' else [h for g in all_groups.values() for h in g]
+        
+        if ask_pass: password = click.prompt("SSH Password", hide_input=True)
+        
+        click.echo(Fore.CYAN + f"[*] Uploading {local_path} to {remote_path} on {len(targets)} hosts...")
+        
+        connect_kwargs = {}
+        if password: connect_kwargs["password"] = password
+        if identity: connect_kwargs["key_filename"] = identity
+
+        group_conn = Group(*targets, user=user, connect_kwargs=connect_kwargs)
+        for conn in group_conn:
+            try:
+                click.echo(Fore.YELLOW + f"[*] {conn.host}: Uploading...")
+                conn.put(local_path, remote_path)
+                click.echo(Fore.GREEN + f"[+] {conn.host}: Success")
+            except Exception as e:
+                click.echo(Fore.RED + f"[-] {conn.host}: Error: {e}")
+
+    except Exception as e:
+        click.echo(Fore.RED + f"Error: {e}")
+
+@cli.command()
+@click.argument('remote_path')
+@click.argument('local_path')
+@click.option('--hosts', '-h', help='Path to the host list file.')
+@click.option('--group', '-g', default='all', help='Target a specific group.')
+@click.option('--user', '-u', help='SSH username.')
+@click.option('--password', '-p', help='SSH password.')
+@click.option('--ask-pass', is_flag=True, help='Prompt for SSH password.')
+@click.option('--identity', '-i', type=click.Path(exists=True), help='Path to private key.')
+def get(remote_path, local_path, hosts, group, user, password, ask_pass, identity):
+    """Download a file from multiple hosts (will append host name to local filename)."""
+    try:
+        if not hosts: hosts = get_default_hosts_path()
+        all_groups = parse_hosts(hosts)
+        targets = all_groups.get(group, []) if group != 'all' else [h for g in all_groups.values() for h in g]
+        
+        if ask_pass: password = click.prompt("SSH Password", hide_input=True)
+        
+        connect_kwargs = {}
+        if password: connect_kwargs["password"] = password
+        if identity: connect_kwargs["key_filename"] = identity
+
+        group_conn = Group(*targets, user=user, connect_kwargs=connect_kwargs)
+        for conn in group_conn:
+            try:
+                # Append host to filename to prevent overwriting
+                target_local = f"{conn.host}_{local_path}"
+                click.echo(Fore.YELLOW + f"[*] {conn.host}: Downloading {remote_path} to {target_local}...")
+                conn.get(remote_path, target_local)
+                click.echo(Fore.GREEN + f"[+] {conn.host}: Success")
+            except Exception as e:
+                click.echo(Fore.RED + f"[-] {conn.host}: Error: {e}")
+
+    except Exception as e:
+        click.echo(Fore.RED + f"Error: {e}")

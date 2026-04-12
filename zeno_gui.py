@@ -14,6 +14,10 @@ class HostTerminal(Gtk.Box):
         self.parent_gui = parent_gui
         self.started = False
         
+        # History
+        self.history = []
+        self.history_index = -1
+        
         # Connection Controls
         ctrl_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
         ctrl_box.set_margin_top(5); ctrl_box.set_margin_bottom(5)
@@ -29,6 +33,7 @@ class HostTerminal(Gtk.Box):
         self.pwd_entry.set_width_chars(12)
         self.pwd_entry.set_visibility(False)
         self.pwd_entry.set_placeholder_text("Password")
+        self.pwd_entry.connect("activate", lambda x: self.start_shell())
         ctrl_box.pack_start(self.pwd_entry, False, False, 0)
         
         self.conn_btn = Gtk.Button(label="Connect")
@@ -40,6 +45,7 @@ class HostTerminal(Gtk.Box):
         self.pack_start(self.inner_notebook, True, True, 0)
 
         # Terminal Tab
+        terminal_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
         scrolled = Gtk.ScrolledWindow()
         self.terminal = Vte.Terminal()
         self.terminal.set_scrollback_lines(10000)
@@ -47,19 +53,41 @@ class HostTerminal(Gtk.Box):
         self.terminal.set_color_foreground(Gdk.RGBA(0, 1, 0, 1)) # Green
         self.terminal.set_color_background(Gdk.RGBA(0, 0, 0, 1)) # Black
         scrolled.add(self.terminal)
-        self.inner_notebook.append_page(scrolled, Gtk.Label(label="Terminal"))
+        terminal_box.pack_start(scrolled, True, True, 0)
+        
+        self.entry = Gtk.Entry()
+        self.entry.set_placeholder_text("Enter command...")
+        self.entry.connect("activate", self.on_entry_activate)
+        self.entry.connect("key-press-event", self.on_key_press)
+        terminal_box.pack_start(self.entry, False, False, 0)
+        
+        self.inner_notebook.append_page(terminal_box, Gtk.Label(label="Terminal"))
 
-        # SFTP Tab
+        # SFTP/SCP Tab
         sftp_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         sftp_box.set_margin_all(10)
         
         sftp_box.pack_start(Gtk.Label(label="Local Path:", xalign=0), False, False, 0)
+        local_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
         self.local_entry = Gtk.Entry(placeholder_text="/path/to/local/file")
-        sftp_box.pack_start(self.local_entry, False, False, 0)
+        local_hbox.pack_start(self.local_entry, True, True, 0)
+        browse_btn = Gtk.Button(label="Browse...")
+        browse_btn.connect("clicked", self.on_browse_clicked)
+        local_hbox.pack_start(browse_btn, False, False, 0)
+        sftp_box.pack_start(local_hbox, False, False, 0)
         
         sftp_box.pack_start(Gtk.Label(label="Remote Path:", xalign=0), False, False, 0)
         self.remote_entry = Gtk.Entry(placeholder_text="/home/user/remote_file")
         sftp_box.pack_start(self.remote_entry, False, False, 0)
+        
+        # Protocol
+        proto_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        proto_box.pack_start(Gtk.Label(label="Protocol:"), False, False, 0)
+        self.sftp_radio = Gtk.RadioButton.new_with_label_from_widget(None, "SFTP")
+        self.scp_radio = Gtk.RadioButton.new_with_label_from_widget(self.sftp_radio, "SCP")
+        proto_box.pack_start(self.sftp_radio, False, False, 0)
+        proto_box.pack_start(self.scp_radio, False, False, 0)
+        sftp_box.pack_start(proto_box, False, False, 0)
         
         sftp_btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         up_btn = Gtk.Button(label="Upload (Put)")
@@ -78,6 +106,42 @@ class HostTerminal(Gtk.Box):
         
         self.inner_notebook.append_page(sftp_box, Gtk.Label(label="File Transfer"))
 
+    def on_browse_clicked(self, btn):
+        dialog = Gtk.FileChooserDialog(
+            title="Please choose a file", parent=self.get_toplevel(),
+            action=Gtk.FileChooserAction.OPEN
+        )
+        dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
+        if dialog.run() == Gtk.ResponseType.OK:
+            self.local_entry.set_text(dialog.get_filename())
+        dialog.destroy()
+
+    def on_entry_activate(self, entry):
+        cmd = self.entry.get_text()
+        if self.started:
+            self.send_string(cmd + "\n")
+            if cmd:
+                self.history.append(cmd)
+                self.history_index = len(self.history)
+            self.entry.set_text("")
+
+    def on_key_press(self, widget, event):
+        from gi.repository import Gdk
+        if not self.history: return False
+        
+        if event.keyval == Gdk.KEY_Up:
+            self.history_index = max(0, self.history_index - 1)
+            self.entry.set_text(self.history[self.history_index])
+            return True
+        elif event.keyval == Gdk.KEY_Down:
+            self.history_index = min(len(self.history), self.history_index + 1)
+            if self.history_index < len(self.history):
+                self.entry.set_text(self.history[self.history_index])
+            else:
+                self.entry.set_text("")
+            return True
+        return False
+
     def log_sftp(self, msg):
         buf = self.sftp_log_view.get_buffer()
         buf.insert(buf.get_end_iter(), msg + "\n")
@@ -95,22 +159,33 @@ class HostTerminal(Gtk.Box):
         threading.Thread(target=self._sftp_thread, args=(op_type, local, remote, user, pwd), daemon=True).start()
 
     def _sftp_thread(self, op_type, local, remote, user, pwd):
+        protocol = "SFTP" if self.sftp_radio.get_active() else "SCP"
         try:
-            GLib.idle_add(self.log_sftp, f"[*] Starting {op_type} to {self.host}...")
+            GLib.idle_add(self.log_sftp, f"[*] Starting {op_type} via {protocol} to {self.host}...")
+            
+            import paramiko
             transport = paramiko.Transport((self.host, 22))
             transport.connect(username=user, password=pwd)
-            sftp = paramiko.SFTPClient.from_transport(transport)
             
-            if op_type == "upload":
-                sftp.put(local, remote)
+            if protocol == "SFTP":
+                sftp = paramiko.SFTPClient.from_transport(transport)
+                if op_type == "upload":
+                    sftp.put(local, remote)
+                else:
+                    sftp.get(remote, local)
+                sftp.close()
             else:
-                sftp.get(remote, local)
+                from scp import SCPClient
+                with SCPClient(transport) as scp:
+                    if op_type == "upload":
+                        scp.put(local, recursive=True, remote_path=remote)
+                    else:
+                        scp.get(remote, local_path=local, recursive=True)
                 
-            sftp.close()
             transport.close()
             GLib.idle_add(self.log_sftp, f"[+] {op_type.capitalize()} successful!")
         except Exception as e:
-            GLib.idle_add(self.log_sftp, f"[-] SFTP Error: {e}")
+            GLib.idle_add(self.log_sftp, f"[-] {protocol} Error: {e}")
 
     def start_shell(self):
         if self.started:
@@ -228,6 +303,9 @@ class SSHGui(Gtk.Window):
         b_box.get_style_context().add_class("broadcast-bar")
         main_content.pack_start(b_box, False, False, 0)
 
+        self.b_history = []
+        self.b_history_index = -1
+
         # Group Selector
         self.group_combo = Gtk.ComboBoxText()
         self.group_combo.append_text("All Groups")
@@ -237,6 +315,7 @@ class SSHGui(Gtk.Window):
         self.broadcast_entry = Gtk.Entry()
         self.broadcast_entry.set_placeholder_text("BROADCAST command to SELECTED group...")
         self.broadcast_entry.connect("activate", self.on_broadcast)
+        self.broadcast_entry.connect("key-press-event", self.on_broadcast_key_press)
         b_box.pack_start(self.broadcast_entry, True, True, 0)
 
         b_btn = Gtk.Button(label="Broadcast All")
@@ -325,14 +404,34 @@ class SSHGui(Gtk.Window):
 
     def on_broadcast(self, widget):
         cmd = self.broadcast_entry.get_text()
-        if not cmd: return
         self.broadcast_entry.set_text("")
+        
+        if cmd:
+            self.b_history.append(cmd)
+            self.b_history_index = len(self.b_history)
         
         selected_group = self.group_combo.get_active_text()
         
         for host, term in self.host_widgets.items():
             if term.started and (selected_group == "All Groups" or self.host_groups.get(host) == selected_group):
                 term.send_string(cmd + "\n")
+
+    def on_broadcast_key_press(self, widget, event):
+        from gi.repository import Gdk
+        if not self.b_history: return False
+        
+        if event.keyval == Gdk.KEY_Up:
+            self.b_history_index = max(0, self.b_history_index - 1)
+            self.broadcast_entry.set_text(self.b_history[self.b_history_index])
+            return True
+        elif event.keyval == Gdk.KEY_Down:
+            self.b_history_index = min(len(self.b_history), self.b_history_index + 1)
+            if self.b_history_index < len(self.b_history):
+                self.broadcast_entry.set_text(self.b_history[self.b_history_index])
+            else:
+                self.broadcast_entry.set_text("")
+            return True
+        return False
 
 if __name__ == "__main__":
     win = SSHGui()
