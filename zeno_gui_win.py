@@ -17,8 +17,11 @@ class HostTerminal(ctk.CTkFrame):
         self.client = None
         self.shell = None
         
-        # Enhanced Regex to catch more artifacts like OSC sequences (]0;...)
-        self.ansi_escape = re.compile(r'(?:\x1B[@-_][0-?]*[ -/]*[@-~])|(?:\x1B\][0-9]*;.*?\x07)')
+        # Precise Regex for ANSI sequences:
+        # 1. CSI: \x1B[ followed by parameters and a command letter
+        # 2. OSC: \x1B] followed by parameters and terminated by \x07 or ST
+        # 3. Other 2-char escapes: \x1B followed by a char in @-Z\_
+        self.ansi_escape = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]|\x1B\].*?(?:\x07|\x1B\\)|\x1B[@-Z\\-_]')
         
         # History
         self.history = []
@@ -226,12 +229,17 @@ class HostTerminal(ctk.CTkFrame):
 
     def append_text(self, text):
         if not text: return
-        self.text_area.configure(state="normal")
         
-        # Simple insertion without complex ANSI parsing for now
-        # Strips ANSI codes to ensure visibility
+        # Strip ANSI escape sequences
         clean_text = self.ansi_escape.sub('', text)
         
+        # Strip non-printable control chars (like bell \x07) and lone \r
+        # Keep newline \n and tab \t
+        clean_text = "".join(ch for ch in clean_text if ch == '\n' or ch == '\t' or ord(ch) >= 32)
+        
+        if not clean_text: return
+
+        self.text_area.configure(state="normal")
         self.text_area.insert("end", clean_text)
         self.text_area.see("end")
         self.text_area.configure(state="disabled")
