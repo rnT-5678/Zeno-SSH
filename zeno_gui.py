@@ -35,16 +35,82 @@ class HostTerminal(Gtk.Box):
         self.conn_btn.connect("clicked", lambda x: self.start_shell())
         ctrl_box.pack_start(self.conn_btn, False, False, 0)
 
-        # Scrolled Window to wrap VTE Terminal
+        # Tabbed Content (Terminal / SFTP)
+        self.inner_notebook = Gtk.Notebook()
+        self.pack_start(self.inner_notebook, True, True, 0)
+
+        # Terminal Tab
         scrolled = Gtk.ScrolledWindow()
         self.terminal = Vte.Terminal()
         self.terminal.set_scrollback_lines(10000)
         self.terminal.set_font(Pango.FontDescription.from_string("monospace 10"))
         self.terminal.set_color_foreground(Gdk.RGBA(0, 1, 0, 1)) # Green
         self.terminal.set_color_background(Gdk.RGBA(0, 0, 0, 1)) # Black
-        
         scrolled.add(self.terminal)
-        self.pack_start(scrolled, True, True, 0)
+        self.inner_notebook.append_page(scrolled, Gtk.Label(label="Terminal"))
+
+        # SFTP Tab
+        sftp_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        sftp_box.set_margin_all(10)
+        
+        sftp_box.pack_start(Gtk.Label(label="Local Path:", xalign=0), False, False, 0)
+        self.local_entry = Gtk.Entry(placeholder_text="/path/to/local/file")
+        sftp_box.pack_start(self.local_entry, False, False, 0)
+        
+        sftp_box.pack_start(Gtk.Label(label="Remote Path:", xalign=0), False, False, 0)
+        self.remote_entry = Gtk.Entry(placeholder_text="/home/user/remote_file")
+        sftp_box.pack_start(self.remote_entry, False, False, 0)
+        
+        sftp_btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        up_btn = Gtk.Button(label="Upload (Put)")
+        up_btn.connect("clicked", lambda x: self.on_sftp_op("upload"))
+        sftp_btn_box.pack_start(up_btn, False, False, 0)
+        
+        down_btn = Gtk.Button(label="Download (Get)")
+        down_btn.connect("clicked", lambda x: self.on_sftp_op("download"))
+        sftp_btn_box.pack_start(down_btn, False, False, 0)
+        sftp_box.pack_start(sftp_btn_box, False, False, 0)
+        
+        sftp_log_scroll = Gtk.ScrolledWindow()
+        self.sftp_log_view = Gtk.TextView(editable=False, cursor_visible=False)
+        sftp_log_scroll.add(self.sftp_log_view)
+        sftp_box.pack_start(sftp_log_scroll, True, True, 0)
+        
+        self.inner_notebook.append_page(sftp_box, Gtk.Label(label="File Transfer"))
+
+    def log_sftp(self, msg):
+        buf = self.sftp_log_view.get_buffer()
+        buf.insert(buf.get_end_iter(), msg + "\n")
+        
+    def on_sftp_op(self, op_type):
+        local = self.local_entry.get_text()
+        remote = self.remote_entry.get_text()
+        user = self.user_entry.get_text()
+        pwd = self.pwd_entry.get_text()
+        
+        if not local or not remote:
+            self.log_sftp("[-] Error: Paths required.")
+            return
+            
+        threading.Thread(target=self._sftp_thread, args=(op_type, local, remote, user, pwd), daemon=True).start()
+
+    def _sftp_thread(self, op_type, local, remote, user, pwd):
+        try:
+            GLib.idle_add(self.log_sftp, f"[*] Starting {op_type} to {self.host}...")
+            transport = paramiko.Transport((self.host, 22))
+            transport.connect(username=user, password=pwd)
+            sftp = paramiko.SFTPClient.from_transport(transport)
+            
+            if op_type == "upload":
+                sftp.put(local, remote)
+            else:
+                sftp.get(remote, local)
+                
+            sftp.close()
+            transport.close()
+            GLib.idle_add(self.log_sftp, f"[+] {op_type.capitalize()} successful!")
+        except Exception as e:
+            GLib.idle_add(self.log_sftp, f"[-] SFTP Error: {e}")
 
     def start_shell(self):
         if self.started:
@@ -197,6 +263,12 @@ class SSHGui(Gtk.Window):
         self.load_hosts_into_editor()
         self.refresh_host_list()
         self.apply_styles()
+
+    def set_margin_all(self, widget, val):
+        widget.set_margin_top(val)
+        widget.set_margin_bottom(val)
+        widget.set_margin_start(val)
+        widget.set_margin_end(val)
 
     def add_host_tab(self, host):
         """Adds a terminal tab for a host if it doesn't already exist."""
