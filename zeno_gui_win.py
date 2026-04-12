@@ -184,25 +184,47 @@ class HostTerminal(ctk.CTkFrame):
     def append_text(self, text):
         self.text_area.configure(state="normal")
         
-        # Simple ANSI parser
-        parts = self.ansi_escape.split(text)
-        matches = self.ansi_escape.findall(text)
-        
-        for i, part in enumerate(parts):
-            if part:
+        # If no ANSI codes, just insert and return
+        if not self.ansi_escape.search(text):
+            if self.current_tag:
+                self.text_area.insert("end", text, self.current_tag)
+            else:
+                self.text_area.insert("end", text)
+            self.text_area.see("end")
+            self.text_area.configure(state="disabled")
+            return
+
+        # Improved ANSI parser
+        last_pos = 0
+        for match in self.ansi_escape.finditer(text):
+            # Insert text before the match
+            start, end = match.span()
+            chunk = text[last_pos:start]
+            if chunk:
                 if self.current_tag:
-                    self.text_area.insert("end", part, self.current_tag)
+                    self.text_area.insert("end", chunk, self.current_tag)
                 else:
-                    self.text_area.insert("end", part)
+                    self.text_area.insert("end", chunk)
             
-            if i < len(matches):
-                code_match = re.search(r'\[(\d+)(?:;\d+)*m', matches[i])
-                if code_match:
-                    code = code_match.group(1)
-                    if code == '0':
-                        self.current_tag = None
-                    elif code in self.color_map:
-                        self.current_tag = f"color_{code}"
+            # Process the ANSI code
+            code_str = match.group()
+            code_match = re.search(r'\[(\d+)(?:;\d+)*m', code_str)
+            if code_match:
+                code = code_match.group(1)
+                if code == '0':
+                    self.current_tag = None
+                elif code in self.color_map:
+                    self.current_tag = f"color_{code}"
+            
+            last_pos = end
+            
+        # Insert remaining text
+        remaining = text[last_pos:]
+        if remaining:
+            if self.current_tag:
+                self.text_area.insert("end", remaining, self.current_tag)
+            else:
+                self.text_area.insert("end", remaining)
         
         self.text_area.see("end")
         self.text_area.configure(state="disabled")
