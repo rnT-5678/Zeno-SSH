@@ -1,80 +1,75 @@
 # Zeno-SSH Windows Distribution
 
-This directory contains the standalone Windows binaries for Zeno-SSH. These versions have been optimized for Windows compatibility using `customtkinter` and `paramiko`.
+This directory contains standalone Windows binaries for Zeno-SSH. These versions are portable, require no installation, and have been optimized for Windows using `CustomTkinter` and `Paramiko`.
 
-## Contents
-- `ZenoSSH-Windows.exe`: Interactive Graphical User Interface.
-- `ZenoSSH-CLI.exe`: Automation Command Line Interface.
+## Included Binaries
+- **`ZenoSSH-Windows.exe`**: Interactive GUI version.
+- **`ZenoSSH-CLI.exe`**: Command-line automation version.
 
 ---
 
 ## 1. Interactive GUI (`ZenoSSH-Windows.exe`)
-The GUI provides a tabbed environment for managing multiple SSH sessions simultaneously.
 
-### Getting Started
-1. **Launch**: Double-click `ZenoSSH-Windows.exe`.
-2. **Host Configuration**: 
-   - Click the **"Config"** tab to edit your `hosts.txt`.
-   - Add hosts one per line. You can use groups like `[web-servers]`.
-   - Click **"Save & Reload"** to update the Server Browser on the left.
-3. **Connecting**: 
-   - Enter your **User** and **Password** in the top bar.
-   - Click a host in the **Server Browser** to open a new terminal tab and connect automatically.
-4. **Broadcast**:
-   - Type a command in the **"Broadcast command..."** box at the top and press Enter (or click "Broadcast") to send that command to **all** active terminal tabs at once.
+The GUI provides a powerful environment for managing multiple servers at once.
+
+### Key Features
+- **Server Browser**: Quickly switch between systems defined in your `hosts.txt`.
+- **Dual Tabs**: Each connection has a **Terminal** tab for commands and a **File Transfer** tab for data.
+- **Manual Connection**: Per-tab credentials (User/Password) with "Enter to Connect" support.
+- **Broadcast Bar**: Execute a command across **all active tabs** simultaneously. Found at the bottom of the main window.
+- **Command History**: Navigate previous commands using **Up/Down arrow keys** in both terminal and broadcast entries.
+- **ANSI Color Support**: High-performance rendering of Linux terminal colors.
+- **Integrated Editor**: Edit and reload `hosts.txt` directly from the "Config" tab.
+
+### Examples
+- **Broadcasting Updates**: Open 5 server tabs, type `sudo apt update` in the broadcast bar at the bottom, and hit Enter.
+- **Quick File Upload**: Go to the "File Transfer" tab, click **Browse** to select a local script, type `/tmp/setup.sh` in remote path, select **SCP**, and click **Upload**.
 
 ---
 
 ## 2. Automation CLI (`ZenoSSH-CLI.exe`)
-The CLI is designed for scripting and rapid command execution across groups of servers.
 
-### Basic Usage
-Open a terminal (Command Prompt or PowerShell) in this directory and run:
+The CLI is perfect for PowerShell scripts or rapid one-off tasks.
 
-```
-.\ZenoSSH-CLI.exe run "uptime" --user myusername --ask-pass
-```
-
-### Common Commands
-- **Target a specific group**:
+### Command Execution (`run`)
+- **Simple uptime check**:
+  ```powershell
+  .\ZenoSSH-CLI.exe run "uptime" --user admin --ask-pass
   ```
-  .\ZenoSSH-CLI.exe run "df -h" --group web-servers --user admin
+- **Run command on specific group**:
+  ```powershell
+  .\ZenoSSH-CLI.exe run "ls /var/www" --group web-servers --user root
   ```
 
-- **Use a specific identity key**:
+### File Transfers (`put` / `get`)
+- **Upload a file to all servers**:
+  ```powershell
+  .\ZenoSSH-CLI.exe put "C:\setup.ps1" "/tmp/setup.ps1" --user admin
   ```
-  .\ZenoSSH-CLI.exe run "ls -la" --identity C:\Users\me\.ssh\id_rsa
+- **Download logs from all servers**:
+  ```powershell
+  .\ZenoSSH-CLI.exe get "/var/log/nginx/access.log" "nginx_backup.log" --user root
   ```
-
-- **Disable parallel execution (run one by one)**:
-  ```
-  .\ZenoSSH-CLI.exe run "reboot" --no-parallel
-  ```
-
-- **Enable logging to a file**:
-  ```
-  .\ZenoSSH-CLI.exe run "tail /var/log/syslog" --log
-  ```
-### CLI Options
-- `command`: The shell command to execute (required).
-- `--hosts`: Path to the host list file (default: `hosts.txt`).
-- `--group`: Target group from the host file (default: `all`).
-- `--user`: SSH username.
-- `--ask-pass`: Prompt for the SSH password securely.
-- `--identity`: Path to a private key file.
-- `--parallel/--no-parallel`: Execute in parallel or serially (default: parallel).
-- `--log`: Enable logging results to `ssh_admin.log`.
+  *Note: The CLI automatically prefixes the local filename with the server address (e.g., `192.168.1.10_nginx_backup.log`) to prevent overwriting.*
 
 ---
 
 ## Configuration (`hosts.txt`)
-The application expects a `hosts.txt` file in the same directory. Example format:
+The apps automatically look for `hosts.txt` in the same folder as the `.exe`. If it doesn't exist, the GUI will create a template for you.
 
+**Format Example:**
 ```text
-[web-servers]
-192.168.1.10
-192.168.1.11
+[web]
+10.0.0.1
+10.0.0.2
 
-[db-servers]
-database.internal.local
+[db]
+db-master.local
 ```
+
+---
+
+## Troubleshooting
+- **Black Screen**: Ensure your SSH server supports `xterm-256color`.
+- **Connection Failed**: Verify your username and password. If using an SSH key, ensure it is in OpenSSH format.
+- **No Text Output**: Check if your server sends non-standard control characters. The app filters common artifacts but might miss exotic ones.
