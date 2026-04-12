@@ -206,12 +206,12 @@ class HostTerminal(ctk.CTkFrame):
 
     def send_command(self, event=None):
         cmd = self.entry.get()
-        if not cmd: return
         
         if self.shell:
             self.shell.send(cmd + "\n")
-            self.history.append(cmd)
-            self.history_index = len(self.history)
+            if cmd: # Only save to history if not empty
+                self.history.append(cmd)
+                self.history_index = len(self.history)
             self.entry.delete(0, 'end')
         else:
             self.append_text("[-] Not connected.\n")
@@ -363,10 +363,10 @@ class ZenoSSHWin(ctk.CTk):
 
     def broadcast_command(self, event=None):
         cmd = self.broadcast_entry.get()
-        if not cmd: return
         
-        self.b_history.append(cmd)
-        self.b_history_index = len(self.b_history)
+        if cmd: # Only save history if not empty
+            self.b_history.append(cmd)
+            self.b_history_index = len(self.b_history)
         
         for term in self.terminals.values():
             term.send_command_manual(cmd)
