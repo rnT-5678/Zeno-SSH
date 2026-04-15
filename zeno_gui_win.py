@@ -74,7 +74,8 @@ class HostTerminal(ctk.CTkFrame):
         self.local_path_sftp = ctk.CTkEntry(local_path_box_sftp, placeholder_text="C:/local/file")
         self.local_path_sftp.pack(side="left", fill="x", expand=True, padx=(0, 5))
         self.local_path_sftp.insert(0, self.base_dir)
-        ctk.CTkButton(local_path_box_sftp, text="Browse...", width=80, command=lambda: self.browse_file(self.local_path_sftp)).pack(side="left")
+        ctk.CTkButton(local_path_box_sftp, text="File...", width=60, command=lambda: self.browse_file(self.local_path_sftp)).pack(side="left", padx=2)
+        ctk.CTkButton(local_path_box_sftp, text="Folder...", width=60, command=lambda: self.browse_folder(self.local_path_sftp)).pack(side="left", padx=2)
         
         ctk.CTkLabel(self.sftp_frame, text="Remote Path:").pack(anchor="w")
         self.remote_path_sftp = ctk.CTkEntry(self.sftp_frame, placeholder_text="/remote/path")
@@ -99,7 +100,8 @@ class HostTerminal(ctk.CTkFrame):
         self.local_path_scp = ctk.CTkEntry(local_path_box_scp, placeholder_text="C:/local/file")
         self.local_path_scp.pack(side="left", fill="x", expand=True, padx=(0, 5))
         self.local_path_scp.insert(0, self.base_dir)
-        ctk.CTkButton(local_path_box_scp, text="Browse...", width=80, command=lambda: self.browse_file(self.local_path_scp)).pack(side="left")
+        ctk.CTkButton(local_path_box_scp, text="File...", width=60, command=lambda: self.browse_file(self.local_path_scp)).pack(side="left", padx=2)
+        ctk.CTkButton(local_path_box_scp, text="Folder...", width=60, command=lambda: self.browse_folder(self.local_path_scp)).pack(side="left", padx=2)
         
         ctk.CTkLabel(self.scp_frame, text="Remote Path:").pack(anchor="w")
         self.remote_path_scp = ctk.CTkEntry(self.scp_frame, placeholder_text="/remote/path")
@@ -189,6 +191,12 @@ class HostTerminal(ctk.CTkFrame):
 
     def _transfer_thread(self, protocol, op_type, local, remote):
         try:
+            # If downloading to a directory, append the remote filename
+            if op_type == "download" and os.path.isdir(local):
+                filename = os.path.basename(remote)
+                local = os.path.join(local, filename)
+                self.log_transfer(protocol, f"[*] Destination is a directory. Saving as: {local}")
+
             self.log_transfer(protocol, f"[*] Starting {op_type} via {protocol}...")
             
             if protocol == "SFTP":
@@ -214,6 +222,12 @@ class HostTerminal(ctk.CTkFrame):
         if filename:
             entry_widget.delete(0, 'end')
             entry_widget.insert(0, filename)
+
+    def browse_folder(self, entry_widget):
+        folder = ctk.filedialog.askdirectory()
+        if folder:
+            entry_widget.delete(0, 'end')
+            entry_widget.insert(0, folder)
 
     def send_command(self, event=None):
         cmd = self.entry.get()
