@@ -6,6 +6,7 @@ import os
 import sys
 import time
 import re
+import stat
 
 class HostTerminal(ctk.CTkFrame):
     def __init__(self, master, host, user, password=None, identity=None, base_dir=None):
@@ -19,10 +20,9 @@ class HostTerminal(ctk.CTkFrame):
         self.client = None
         self.shell = None
         
-        # Precise Regex for ANSI sequences:
+        # Precise Regex for ANSI sequences
         self.ansi_escape = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]|\x1B\].*?(?:\x07|\x1B\\)|\x1B[@-Z\\-_]')
         
-        # History
         self.history = []
         self.history_index = -1
         
@@ -85,6 +85,7 @@ class HostTerminal(ctk.CTkFrame):
         btn_box_sftp.pack(fill="x")
         ctk.CTkButton(btn_box_sftp, text="SFTP Upload", command=lambda: self.transfer_op("SFTP", "upload"), width=120).pack(side="left", padx=5)
         ctk.CTkButton(btn_box_sftp, text="SFTP Download", command=lambda: self.transfer_op("SFTP", "download"), width=120).pack(side="left", padx=5)
+        ctk.CTkButton(btn_box_sftp, text="Search (Recursive)", command=self.sftp_search, width=120).pack(side="left", padx=5)
         
         self.sftp_log = ctk.CTkTextbox(self.sftp_frame, height=150, font=("Courier New", 11))
         self.sftp_log.pack(fill="both", expand=True, pady=10)
@@ -191,7 +192,6 @@ class HostTerminal(ctk.CTkFrame):
 
     def _transfer_thread(self, protocol, op_type, local, remote):
         try:
-            # If downloading to a directory, append the remote filename
             if op_type == "download" and os.path.isdir(local):
                 filename = os.path.basename(remote)
                 local = os.path.join(local, filename)
@@ -216,6 +216,43 @@ class HostTerminal(ctk.CTkFrame):
             self.log_transfer(protocol, f"[+] {op_type.capitalize()} complete!")
         except Exception as e:
             self.log_transfer(protocol, f"[-] {protocol} Error: {e}")
+
+    def sftp_search(self):
+        if not self.client:
+            self.log_transfer("SFTP", "[-] Error: Connect via SSH first.")
+            return
+        
+        remote = self.remote_path_sftp.get().strip()
+        if not remote:
+            self.log_transfer("SFTP", "[-] Error: Provide a remote search path or pattern.")
+            return
+            
+        threading.Thread(target=self._search_thread, args=(remote,), daemon=True).start()
+
+    def _search_thread(self, pattern):
+        try:
+            self.log_transfer("SFTP", f"[*] Starting recursive search for: {pattern}...")
+            sftp = self.client.open_sftp()
+            
+            matches = []
+            def recursive_find(path):
+                try:
+                    for entry in sftp.listdir_attr(path):
+                        full_path = os.path.join(path, entry.filename).replace("\\", "/")
+                        if pattern.lower() in entry.filename.lower():
+                            matches.append(full_path)
+                            self.log_transfer("SFTP", f"[MATCH] {full_path}")
+                        
+                        if stat.S_ISDIR(entry.st_mode):
+                            recursive_find(full_path)
+                except Exception:
+                    pass
+
+            recursive_find(".")
+            self.log_transfer("SFTP", f"[+] Search complete. Found {len(matches)} matches.")
+            sftp.close()
+        except Exception as e:
+            self.log_transfer("SFTP", f"[-] Search Error: {e}")
 
     def browse_file(self, entry_widget):
         filename = ctk.filedialog.askopenfilename()
@@ -317,14 +354,16 @@ class ZenoSSHWin(ctk.CTk):
 
     def ensure_hosts_file(self):
         if not os.path.exists(self.hosts_path):
-            default_content = "[web-servers]\n# example-01.com\n127.0.0.1\n\n[database]\n# 10.0.0.5\n"
+            default_content = "[web-servers]\n# example-01.com\n127.0.0.1\n\n[sftp-accounts]\n# Alias | Host | Port | User\n# MyStorage | 1.2.3.4 | 22 | backup_user\n"
             with open(self.hosts_path, "w") as f:
                 f.write(default_content)
 
     def load_hosts(self):
         for widget in self.host_list_frame.winfo_children():
             widget.destroy()
+        self.host_configs = {} 
         if os.path.exists(self.hosts_path):
+            current_group = "General"
             with open(self.hosts_path, "r") as f:
                 content = f.read()
                 self.config_text.delete("1.0", "end")
@@ -332,9 +371,32 @@ class ZenoSSHWin(ctk.CTk):
                 f.seek(0)
                 for line in f:
                     line = line.strip()
-                    if not line or line.startswith(("#", "[")):
+                    if not line or line.startswith("#"):
                         continue
-                    ctk.CTkButton(self.host_list_frame, text=line, fg_color="transparent", border_width=1, anchor="w", command=lambda h=line: self.add_terminal(h)).pack(fill="x", pady=2)
+                    
+                    if line.startswith("[") and line.endswith("]"):
+                        current_group = line[1:-1]
+                        ctk.CTkLabel(self.host_list_frame, text=current_group.upper(), 
+                                   font=ctk.CTkFont(size=12, weight="bold"),
+                                   text_color="#3498db", anchor="w").pack(fill="x", pady=(10, 2), padx=5)
+                        continue
+
+                    display_text = line
+                    host_id = line
+                    if "|" in line:
+                        parts = [p.strip() for p in line.split("|")]
+                        if len(parts) >= 2:
+                            alias = parts[0]
+                            host = parts[1]
+                            port = parts[2] if len(parts) > 2 else "22"
+                            user = parts[3] if len(parts) > 3 else ""
+                            self.host_configs[alias] = {"host": host, "port": port, "user": user}
+                            display_text = f"SFTP: {alias}"
+                            host_id = alias
+
+                    ctk.CTkButton(self.host_list_frame, text=display_text, 
+                                fg_color="transparent", border_width=1, anchor="w", 
+                                command=lambda h=host_id: self.add_terminal(h)).pack(fill="x", pady=1, padx=(20, 5))
 
     def save_hosts(self):
         content = self.config_text.get("1.0", "end-1c")
@@ -346,13 +408,29 @@ class ZenoSSHWin(ctk.CTk):
         if host in self.terminals:
             self.tabview.set(host)
             return
-        default_user = os.getlogin() if hasattr(os, 'getlogin') else "user"
+            
+        config = self.host_configs.get(host)
+        if config:
+            real_host = config["host"]
+            default_user = config["user"]
+            default_port = config["port"]
+            default_pass = "" 
+        else:
+            real_host = host
+            default_user = os.getlogin() if hasattr(os, 'getlogin') else "user"
+            default_pass = ""
+            default_port = "22"
+        
         self.tabview.add(host)
-        term = HostTerminal(self.tabview.tab(host), host, default_user, "", base_dir=self.base_dir)
+        term = HostTerminal(self.tabview.tab(host), real_host, default_user, default_pass, base_dir=self.base_dir)
+        term.port_var.set(default_port)
         term.pack(fill="both", expand=True)
         self.terminals[host] = term
         self.tabview.set(host)
         term.connect(self.update_status)
+        
+        if default_user:
+            term.pwd_input.focus_set()
 
     def update_status(self, host, status):
         print(f"Host {host} status: {status}")
