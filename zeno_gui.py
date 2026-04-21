@@ -5,6 +5,7 @@ import threading
 import paramiko
 from scp import SCPClient
 import stat
+import time
 
 gi.require_version('Gtk', '3.0')
 gi.require_version('Vte', '2.91')
@@ -17,7 +18,10 @@ class HostTerminal(Gtk.Box):
         self.host = host
         self.parent_gui = parent_gui
         self.started = False
-        self.base_dir = os.getcwd()
+        
+        # State
+        self.local_cwd = os.getcwd()
+        self.remote_cwd = "."
         
         # Connection details
         if config:
@@ -31,252 +35,269 @@ class HostTerminal(Gtk.Box):
             self.default_pass = ""
             self.default_port = "22"
 
-        # History
-        self.history = []
-        self.history_index = -1
+        self.history = []; self.history_index = -1
+        self.client = None; self.shell = None; self.sftp = None
         
         # Connection Controls
         ctrl_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
-        ctrl_box.set_margin_top(5); ctrl_box.set_margin_bottom(5)
-        ctrl_box.set_margin_start(5); ctrl_box.set_margin_end(5)
+        ctrl_box.set_margin_all(5)
         self.pack_start(ctrl_box, False, False, 0)
         
-        self.user_entry = Gtk.Entry()
-        self.user_entry.set_width_chars(12)
-        self.user_entry.set_text(self.default_user)
+        self.user_entry = Gtk.Entry(); self.user_entry.set_text(self.default_user)
         ctrl_box.pack_start(self.user_entry, False, False, 0)
         
-        self.pwd_entry = Gtk.Entry()
-        self.pwd_entry.set_width_chars(12)
-        self.pwd_entry.set_visibility(False)
-        self.pwd_entry.set_text(self.default_pass)
-        self.pwd_entry.set_placeholder_text("Password")
+        self.pwd_entry = Gtk.Entry(); self.pwd_entry.set_visibility(False); self.pwd_entry.set_placeholder_text("Password")
         self.pwd_entry.connect("activate", lambda x: self.start_shell())
         ctrl_box.pack_start(self.pwd_entry, False, False, 0)
         
-        self.port_entry = Gtk.Entry()
-        self.port_entry.set_width_chars(5)
-        self.port_entry.set_text(self.default_port)
+        self.port_entry = Gtk.Entry(); self.port_entry.set_width_chars(5); self.port_entry.set_text(self.default_port)
         ctrl_box.pack_start(self.port_entry, False, False, 0)
         
         self.conn_btn = Gtk.Button(label="Connect")
         self.conn_btn.connect("clicked", lambda x: self.start_shell())
         ctrl_box.pack_start(self.conn_btn, False, False, 0)
 
-        # Tabbed Content
+        # Tabs
         self.inner_notebook = Gtk.Notebook()
         self.pack_start(self.inner_notebook, True, True, 0)
 
         # Terminal Tab
-        terminal_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        term_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
         scrolled = Gtk.ScrolledWindow()
         self.terminal = Vte.Terminal()
-        self.terminal.set_scrollback_lines(10000)
         self.terminal.set_font(Pango.FontDescription.from_string("monospace 10"))
         self.terminal.set_color_foreground(Gdk.RGBA(0, 1, 0, 1))
         self.terminal.set_color_background(Gdk.RGBA(0, 0, 0, 1))
         scrolled.add(self.terminal)
-        terminal_box.pack_start(scrolled, True, True, 0)
+        term_box.pack_start(scrolled, True, True, 0)
         self.entry = Gtk.Entry(placeholder_text="Enter command...")
         self.entry.connect("activate", self.on_entry_activate)
         self.entry.connect("key-press-event", self.on_key_press)
-        terminal_box.pack_start(self.entry, False, False, 0)
-        self.inner_notebook.append_page(terminal_box, Gtk.Label(label="Terminal"))
+        term_box.pack_start(self.entry, False, False, 0)
+        self.inner_notebook.append_page(term_box, Gtk.Label(label="Terminal"))
 
-        # SFTP/SCP Tabs
-        self.inner_notebook.append_page(self.create_transfer_tab("SFTP"), Gtk.Label(label="SFTP"))
-        self.inner_notebook.append_page(self.create_transfer_tab("SCP"), Gtk.Label(label="SCP"))
+        # SFTP Tab (Visual Explorer)
+        sftp_main = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        sftp_main.set_margin_all(5)
+        
+        # SFTP Toolbar
+        sftp_tool = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        ref_btn = Gtk.Button(label="Refresh")
+        ref_btn.connect("clicked", lambda x: self.refresh_sftp())
+        sftp_tool.pack_start(ref_btn, False, False, 0)
+        
+        self.search_entry = Gtk.Entry(placeholder_text="Recursive Search Pattern...")
+        sftp_tool.pack_start(self.search_entry, True, True, 0)
+        
+        src_btn = Gtk.Button(label="Search")
+        src_btn.connect("clicked", lambda x: self.on_search_clicked())
+        sftp_tool.pack_start(src_btn, False, False, 0)
+        sftp_main.pack_start(sftp_tool, False, False, 0)
 
-    def create_transfer_tab(self, protocol):
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        box.set_margin_all(10)
-        box.pack_start(Gtk.Label(label="Local Path:", xalign=0), False, False, 0)
-        hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
-        local_entry = Gtk.Entry(); local_entry.set_text(self.base_dir)
-        hbox.pack_start(local_entry, True, True, 0)
+        # Split Panes
+        paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        sftp_main.pack_start(paned, True, True, 0)
+
+        # Local Pane
+        l_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.l_path_lbl = Gtk.Label(xalign=0); l_box.pack_start(self.l_path_lbl, False, False, 0)
+        l_scroll = Gtk.ScrolledWindow(); self.l_list = Gtk.ListBox(); l_scroll.add(self.l_list)
+        l_box.pack_start(l_scroll, True, True, 0)
+        paned.pack1(l_box, True, False)
+
+        # Remote Pane
+        r_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.r_path_lbl = Gtk.Label(xalign=0); r_box.pack_start(self.r_path_lbl, False, False, 0)
+        r_scroll = Gtk.ScrolledWindow(); self.r_list = Gtk.ListBox(); r_scroll.add(self.r_list)
+        r_box.pack_start(r_scroll, True, True, 0)
+        paned.pack2(r_box, True, False)
         
-        file_btn = Gtk.Button(label="File...")
-        file_btn.connect("clicked", lambda b: self.on_browse(local_entry, False))
-        hbox.pack_start(file_btn, False, False, 0)
+        # Dialogue (Log)
+        self.sftp_log_view = Gtk.TextView(editable=False); self.sftp_log_view.set_size_request(-1, 80)
+        log_scroll = Gtk.ScrolledWindow(); log_scroll.add(self.sftp_log_view)
+        sftp_main.pack_start(log_scroll, False, False, 0)
         
-        folder_btn = Gtk.Button(label="Folder...")
-        folder_btn.connect("clicked", lambda b: self.on_browse(local_entry, True))
-        hbox.pack_start(folder_btn, False, False, 0)
-        box.pack_start(hbox, False, False, 0)
+        self.inner_notebook.append_page(sftp_main, Gtk.Label(label="SFTP"))
         
-        box.pack_start(Gtk.Label(label="Remote Path:", xalign=0), False, False, 0)
-        remote_entry = Gtk.Entry()
-        box.pack_start(remote_entry, False, False, 0)
+        # SCP Tab (Simple)
+        self.inner_notebook.append_page(self.create_scp_tab(), Gtk.Label(label="SCP"))
         
-        btn_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        up_btn = Gtk.Button(label=f"{protocol} Upload")
-        up_btn.connect("clicked", lambda x: self.on_transfer_op(protocol, "upload", local_entry, remote_entry))
-        btn_hbox.pack_start(up_btn, False, False, 0)
-        
-        down_btn = Gtk.Button(label=f"{protocol} Download")
-        down_btn.connect("clicked", lambda x: self.on_transfer_op(protocol, "download", local_entry, remote_entry))
-        btn_hbox.pack_start(down_btn, False, False, 0)
-        
-        if protocol == "SFTP":
-            search_btn = Gtk.Button(label="Search (Recursive)")
-            search_btn.connect("clicked", lambda x: self.on_search_clicked(remote_entry))
-            btn_hbox.pack_start(search_btn, False, False, 0)
-            
-        box.pack_start(btn_hbox, False, False, 0)
-        log_scroll = Gtk.ScrolledWindow()
-        log_view = Gtk.TextView(editable=False); log_scroll.add(log_view)
-        box.pack_start(log_scroll, True, True, 0)
-        
-        if protocol == "SFTP":
-            self.sftp_log_view = log_view
-        else:
-            self.scp_log_view = log_view
+        self.update_local_list()
+
+    def create_scp_tab(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5); box.set_margin_all(10)
+        self.scp_l = Gtk.Entry(placeholder_text="Local Path"); box.pack_start(self.scp_l, False, False, 0)
+        self.scp_r = Gtk.Entry(placeholder_text="Remote Path"); box.pack_start(self.scp_r, False, False, 0)
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        u_btn = Gtk.Button(label="SCP Upload"); u_btn.connect("clicked", lambda x: self.on_scp_op("upload"))
+        d_btn = Gtk.Button(label="SCP Download"); d_btn.connect("clicked", lambda x: self.on_scp_op("download"))
+        btn_box.pack_start(u_btn, False, False, 0); btn_box.pack_start(d_btn, False, False, 0)
+        box.pack_start(btn_box, False, False, 0)
+        self.scp_log_view = Gtk.TextView(editable=False); s = Gtk.ScrolledWindow(); s.add(self.scp_log_view)
+        box.pack_start(s, True, True, 0)
         return box
 
-    def on_browse(self, entry, is_folder):
-        action = Gtk.FileChooserAction.SELECT_FOLDER if is_folder else Gtk.FileChooserAction.OPEN
-        dialog = Gtk.FileChooserDialog(title="Select Path", parent=self.get_toplevel(), action=action)
-        dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
-        if dialog.run() == Gtk.ResponseType.OK: entry.set_text(dialog.get_filename())
-        dialog.destroy()
-
     def log_transfer(self, protocol, msg):
-        log_view = self.sftp_log_view if protocol == "SFTP" else self.scp_log_view
-        buf = log_view.get_buffer()
-        buf.insert(buf.get_end_iter(), msg + "\n")
+        view = self.sftp_log_view if protocol == "SFTP" else self.scp_log_view
+        GLib.idle_add(self._log_idle, view, msg)
 
-    def on_search_clicked(self, remote_ent):
-        pattern = remote_ent.get_text()
-        if not pattern: return
+    def _log_idle(self, view, msg):
+        buf = view.get_buffer(); buf.insert(buf.get_end_iter(), f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+        return False
+
+    def update_local_list(self):
+        for child in self.l_list.get_children(): self.l_list.remove(child)
+        self.l_path_lbl.set_text(f"Local: {self.local_cwd}")
+        try:
+            items = [".."] + sorted(os.listdir(self.local_cwd))
+            for item in items:
+                path = os.path.join(self.local_cwd, item)
+                is_dir = os.path.isdir(path)
+                lbl = Gtk.Label(label=f"{'📁' if is_dir else '📄'} {item}", xalign=0)
+                row = Gtk.ListBoxRow(); row.add(lbl); row.show_all()
+                self.l_list.add(row)
+            self.l_list.connect("row-activated", self.on_local_row_activated)
+        except Exception as e: self.log_transfer("SFTP", f"Local Error: {e}")
+
+    def on_local_row_activated(self, listbox, row):
+        item = row.get_child().get_text()[3:]
+        if item == "..": self.local_cwd = os.path.dirname(self.local_cwd)
+        else:
+            path = os.path.join(self.local_cwd, item)
+            if os.path.isdir(path): self.local_cwd = path
+        self.update_local_list()
+
+    def refresh_sftp(self):
+        if not self.sftp: return
+        for child in self.r_list.get_children(): self.r_list.remove(child)
+        self.r_path_lbl.set_text(f"Remote: {self.remote_cwd}")
+        try:
+            self.sftp.chdir(self.remote_cwd)
+            items = [".."] + sorted(self.sftp.listdir())
+            for item in items:
+                try:
+                    attr = self.sftp.stat(item)
+                    is_dir = stat.S_ISDIR(attr.st_mode)
+                    lbl = Gtk.Label(label=f"{'📁' if is_dir else '📄'} {item}", xalign=0)
+                    row = Gtk.ListBoxRow(); row.add(lbl); row.show_all()
+                    self.r_list.add(row)
+                except: pass
+            self.r_list.connect("row-activated", self.on_remote_row_activated)
+        except Exception as e: self.log_transfer("SFTP", f"Remote Error: {e}")
+
+    def on_remote_row_activated(self, listbox, row):
+        item = row.get_child().get_text()[3:]
+        if item == "..": self.remote_cwd = os.path.dirname(self.remote_cwd)
+        else:
+            try:
+                attr = self.sftp.stat(item)
+                if stat.S_ISDIR(attr.st_mode):
+                    self.remote_cwd = os.path.join(self.remote_cwd, item).replace("\\", "/")
+                    self.refresh_sftp()
+                else:
+                    dest = os.path.join(self.local_cwd, item)
+                    threading.Thread(target=self._transfer_thread, args=("SFTP", "download", dest, item), daemon=True).start()
+            except: pass
+
+    def on_search_clicked(self):
+        pattern = self.search_entry.get_text()
+        if not pattern or not self.sftp: return
         threading.Thread(target=self._search_thread, args=(pattern,), daemon=True).start()
 
     def _search_thread(self, pattern):
-        try:
-            GLib.idle_add(self.log_transfer, "SFTP", f"[*] Recursive search for: {pattern}...")
-            user = self.user_entry.get_text(); pwd = self.pwd_entry.get_text()
-            port = int(self.port_entry.get_text()) if self.port_entry.get_text().isdigit() else 22
-            transport = paramiko.Transport((self.real_host, port))
-            transport.connect(username=user, password=pwd)
-            sftp = paramiko.SFTPClient.from_transport(transport)
-            def find(path):
-                try:
-                    for entry in sftp.listdir_attr(path):
-                        full = os.path.join(path, entry.filename).replace("\\", "/")
-                        if pattern.lower() in entry.filename.lower():
-                            GLib.idle_add(self.log_transfer, "SFTP", f"[MATCH] {full}")
-                        if stat.S_ISDIR(entry.st_mode): find(full)
-                except Exception: pass
-            find(".")
-            GLib.idle_add(self.log_transfer, "SFTP", "[+] Search complete.")
-            sftp.close(); transport.close()
-        except Exception as e: GLib.idle_add(self.log_transfer, "SFTP", f"[-] Error: {e}")
+        self.log_transfer("SFTP", f"Recursive search for '{pattern}'...")
+        def find(path):
+            try:
+                for entry in self.sftp.listdir_attr(path):
+                    full = os.path.join(path, entry.filename).replace("\\", "/")
+                    if pattern.lower() in entry.filename.lower(): self.log_transfer("SFTP", f"FOUND: {full}")
+                    if stat.S_ISDIR(entry.st_mode): find(full)
+            except: pass
+        find(self.remote_cwd)
+        self.log_transfer("SFTP", "Search finished.")
 
-    def on_transfer_op(self, protocol, op_type, local_ent, remote_ent):
-        local = local_ent.get_text(); remote = remote_ent.get_text()
-        user = self.user_entry.get_text(); pwd = self.pwd_entry.get_text()
-        port = int(self.port_entry.get_text()) if self.port_entry.get_text().isdigit() else 22
-        threading.Thread(target=self._transfer_thread, args=(protocol, op_type, local, remote, user, pwd, port), daemon=True).start()
+    def on_scp_op(self, op):
+        local = self.scp_l.get_text(); remote = self.scp_r.get_text()
+        threading.Thread(target=self._transfer_thread, args=("SCP", op, local, remote), daemon=True).start()
 
-    def _transfer_thread(self, protocol, op_type, local, remote, user, pwd, port):
+    def _transfer_thread(self, proto, op, local, remote):
         try:
-            if op_type == "download" and os.path.isdir(local):
-                local = os.path.join(local, os.path.basename(remote))
-            GLib.idle_add(self.log_transfer, protocol, f"[*] Starting {op_type} via {protocol}...")
-            transport = paramiko.Transport((self.real_host, port))
-            transport.connect(username=user, password=pwd)
-            if protocol == "SFTP":
-                sftp = paramiko.SFTPClient.from_transport(transport)
-                if op_type == "upload": sftp.put(local, remote)
-                else: sftp.get(remote, local)
-                sftp.close()
+            self.log_transfer(proto, f"Starting {op}...")
+            if proto == "SFTP":
+                if op == "upload": self.sftp.put(local, remote)
+                else: self.sftp.get(remote, local)
             else:
-                with SCPClient(transport) as scp:
-                    if op_type == "upload": scp.put(local, recursive=True, remote_path=remote)
-                    else: scp.get(remote, local_path=local, recursive=True)
-            transport.close()
-            GLib.idle_add(self.log_transfer, protocol, f"[+] {op_type.capitalize()} successful!")
-        except Exception as e: GLib.idle_add(self.log_transfer, protocol, f"[-] Error: {e}")
+                with SCPClient(self.client.get_transport()) as scp:
+                    if op == "upload": scp.put(local, remote)
+                    else: scp.get(remote, local)
+            self.log_transfer(proto, "Transfer successful.")
+            GLib.idle_add(self.update_local_list); GLib.idle_add(self.refresh_sftp)
+        except Exception as e: self.log_transfer(proto, f"Error: {e}")
+
+    def start_shell(self):
+        if self.started: return
+        self.started = True; self.conn_btn.set_sensitive(False); self.conn_btn.set_label("Connecting...")
+        user = self.user_entry.get_text(); port = self.port_entry.get_text(); pwd = self.pwd_entry.get_text()
+        threading.Thread(target=self._ssh_connect_thread, args=(user, port, pwd), daemon=True).start()
+
+    def _ssh_connect_thread(self, user, port, pwd):
+        try:
+            p_int = int(port) if port.isdigit() else 22
+            self.client = paramiko.SSHClient()
+            self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            self.client.connect(hostname=self.real_host, port=p_int, username=user, password=pwd, timeout=15)
+            self.sftp = self.client.open_sftp()
+            self.shell = self.client.invoke_shell(term='xterm-256color')
+            GLib.idle_add(self._on_connected)
+            while self.shell:
+                if self.shell.recv_ready():
+                    data = self.shell.recv(8192).decode('utf-8', errors='ignore')
+                    GLib.idle_add(self.append_text, data)
+                elif self.shell.exit_status_ready(): break
+                else: time.sleep(0.01)
+        except Exception as e:
+            self.log_transfer("SFTP", f"Connection failed: {e}")
+            GLib.idle_add(self.conn_btn.set_sensitive, True); GLib.idle_add(self.conn_btn.set_label, "Connect")
+
+    def _on_connected(self):
+        self.conn_btn.set_label("Connected"); self.parent_gui.update_host_status(self.host, "success"); self.refresh_sftp()
+
+    def append_text(self, text):
+        buf = self.terminal.feed_child(text.encode('utf-8')) # Using Vte native feed for better rendering
 
     def on_entry_activate(self, entry):
-        cmd = self.entry.get_text()
-        if self.started:
-            self.send_string(cmd + "\n")
+        cmd = entry.get_text(); entry.set_text("")
+        if self.shell:
+            self.shell.send(cmd + "\n")
             if cmd: self.history.append(cmd); self.history_index = len(self.history)
-            self.entry.set_text("")
 
     def on_key_press(self, widget, event):
         if not self.history: return False
         if event.keyval == Gdk.KEY_Up:
             self.history_index = max(0, self.history_index - 1)
-            self.entry.set_text(self.history[self.history_index]); return True
+            widget.set_text(self.history[self.history_index]); return True
         elif event.keyval == Gdk.KEY_Down:
             self.history_index = min(len(self.history), self.history_index + 1)
-            self.entry.set_text(self.history[self.history_index] if self.history_index < len(self.history) else ""); return True
+            widget.set_text(self.history[self.history_index] if self.history_index < len(self.history) else ""); return True
         return False
-
-    def start_shell(self):
-        if self.started: return
-        self.started = True; self.conn_btn.set_sensitive(False); self.conn_btn.set_label("Connecting...")
-        user = self.user_entry.get_text(); port = self.port_entry.get_text()
-        ssh_cmd = ["/usr/bin/ssh", "-p", port, "-t", f"{user}@{self.real_host}", "bash"]
-        self.terminal.spawn_async(Vte.PtyFlags.DEFAULT, os.getcwd(), ssh_cmd, None, GLib.SpawnFlags.DEFAULT, None, None, -1, None, self.on_spawn_complete)
-
-    def on_spawn_complete(self, terminal, pid, error):
-        if error: self.started = False; self.conn_btn.set_sensitive(True); self.conn_btn.set_label("Connect")
-        else: self.conn_btn.set_label("Connected"); self.terminal.connect("child-exited", self.on_child_exited)
-        pwd = self.pwd_entry.get_text()
-        if pwd: GLib.timeout_add(1000, self.send_string, pwd + "\n")
-
-    def on_child_exited(self, terminal, status):
-        self.started = False; self.conn_btn.set_sensitive(True); self.conn_btn.set_label("Connect")
-
-    def send_string(self, text):
-        self.terminal.feed_child(text.encode('utf-8')); return False
 
 class SSHGui(Gtk.Window):
     def __init__(self):
         super().__init__(title="Zeno-SSH")
-        self.set_default_size(1200, 800)
-        self.connect("destroy", Gtk.main_quit)
-        self.paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        self.add(self.paned)
-        sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-        sidebar.set_margin_all(10); sidebar.set_size_request(250, -1)
-        sidebar.pack_start(Gtk.Label(label="<b>Server Browser</b>", use_markup=True), False, False, 5)
-        sb_scrolled = Gtk.ScrolledWindow()
-        self.tree_store = Gtk.TreeStore(str, str)
-        self.tree_view = Gtk.TreeView(model=self.tree_store)
-        col = Gtk.TreeViewColumn("Systems")
-        cell = Gtk.CellRendererText(); col.pack_start(cell, True); col.add_attribute(cell, "text", 0)
-        self.tree_view.append_column(col)
-        self.tree_view.connect("row-activated", self.on_tree_item_activated)
-        sb_scrolled.add(self.tree_view)
-        sidebar.pack_start(sb_scrolled, True, True, 0)
-        refresh_btn = Gtk.Button(label="Refresh List")
-        refresh_btn.connect("clicked", lambda x: self.refresh_host_list())
-        sidebar.pack_start(refresh_btn, False, False, 5)
-        self.paned.pack1(sidebar, False, False)
-        main_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        main_content.set_margin_all(10); self.paned.pack2(main_content, True, False)
-        self.notebook = Gtk.Notebook(); self.notebook.set_scrollable(True)
-        main_content.pack_start(self.notebook, True, True, 0)
-        b_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        b_box.get_style_context().add_class("broadcast-bar")
-        main_content.pack_start(b_box, False, False, 0)
-        self.b_history = []; self.b_history_index = -1
-        self.group_combo = Gtk.ComboBoxText(); self.group_combo.append_text("All Groups"); self.group_combo.set_active(0)
-        b_box.pack_start(self.group_combo, False, False, 0)
-        self.broadcast_entry = Gtk.Entry(placeholder_text="Broadcast to all active terminal sessions...")
-        self.broadcast_entry.connect("activate", self.on_broadcast)
-        self.broadcast_entry.connect("key-press-event", self.on_broadcast_key_press)
-        b_box.pack_start(self.broadcast_entry, True, True, 0)
-        self.editor_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-        ed_scrolled = Gtk.ScrolledWindow(); self.host_text_view = Gtk.TextView(); ed_scrolled.add(self.host_text_view)
-        self.editor_box.pack_start(ed_scrolled, True, True, 0)
-        save_btn = Gtk.Button(label="Save & Reload List")
-        save_btn.connect("clicked", self.on_save_hosts)
-        self.editor_box.pack_start(save_btn, False, False, 5)
-        self.notebook.append_page(self.editor_box, Gtk.Label(label="⚙ Host Config"))
+        self.set_default_size(1200, 800); self.connect("destroy", Gtk.main_quit)
+        self.paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL); self.add(self.paned)
+        sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5); sidebar.set_margin_all(10); sidebar.set_size_request(250, -1)
+        sb_scrolled = Gtk.ScrolledWindow(); self.tree_store = Gtk.TreeStore(str, str); self.tree_view = Gtk.TreeView(model=self.tree_store)
+        col = Gtk.TreeViewColumn("Systems"); cell = Gtk.CellRendererText(); col.pack_start(cell, True); col.add_attribute(cell, "text", 0)
+        self.tree_view.append_column(col); self.tree_view.connect("row-activated", self.on_tree_item_activated); sb_scrolled.add(self.tree_view)
+        sidebar.pack_start(sb_scrolled, True, True, 0); r_btn = Gtk.Button(label="Refresh List"); r_btn.connect("clicked", lambda x: self.refresh_host_list()); sidebar.pack_start(r_btn, False, False, 5); self.paned.pack1(sidebar, False, False)
+        main_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10); main_content.set_margin_all(10); self.paned.pack2(main_content, True, False)
+        self.notebook = Gtk.Notebook(); self.notebook.set_scrollable(True); main_content.pack_start(self.notebook, True, True, 0)
+        b_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10); b_box.get_style_context().add_class("broadcast-bar"); main_content.pack_start(b_box, False, False, 0)
+        self.b_history = []; self.b_history_index = -1; self.group_combo = Gtk.ComboBoxText(); self.group_combo.append_text("All Groups"); self.group_combo.set_active(0); b_box.pack_start(self.group_combo, False, False, 0)
+        self.broadcast_entry = Gtk.Entry(placeholder_text="Broadcast to all active terminal sessions..."); self.broadcast_entry.connect("activate", self.on_broadcast); self.broadcast_entry.connect("key-press-event", self.on_broadcast_key_press); b_box.pack_start(self.broadcast_entry, True, True, 0)
+        ed_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5); ed_scrolled = Gtk.ScrolledWindow(); self.host_text_view = Gtk.TextView(); ed_scrolled.add(self.host_text_view); ed_box.pack_start(ed_scrolled, True, True, 0)
+        s_btn = Gtk.Button(label="Save & Reload List"); s_btn.connect("clicked", self.on_save_hosts); ed_box.pack_start(s_btn, False, False, 5); self.notebook.append_page(ed_box, Gtk.Label(label="⚙ Host Config"))
         self.host_widgets = {}; self.tab_labels = {}; self.host_groups = {}; self.host_configs = {}
         self.load_hosts_into_editor(); self.refresh_host_list(); self.apply_styles()
 
@@ -285,8 +306,7 @@ class SSHGui(Gtk.Window):
             with open("hosts.txt", "r") as f: self.host_text_view.get_buffer().set_text(f.read())
 
     def on_save_hosts(self, btn):
-        buf = self.host_text_view.get_buffer()
-        content = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True)
+        buf = self.host_text_view.get_buffer(); content = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True)
         with open("hosts.txt", "w") as f: f.write(content)
         self.refresh_host_list()
 
@@ -300,68 +320,50 @@ class SSHGui(Gtk.Window):
                     line = line.strip()
                     if not line or line.startswith("#"): continue
                     if line.startswith("[") and line.endswith("]"):
-                        current_group = line[1:-1]; group_iter = self.tree_store.append(None, [current_group.upper(), "group"])
-                        self.group_combo.append_text(current_group); continue
+                        current_group = line[1:-1]; group_iter = self.tree_store.append(None, [current_group.upper(), "group"]); self.group_combo.append_text(current_group); continue
                     if "|" in line:
                         parts = [p.strip() for p in line.split("|")]
                         if len(parts) >= 2:
                             alias = parts[0]; host = parts[1]; port = parts[2] if len(parts) > 2 else "22"; user = parts[3] if len(parts) > 3 else ""
-                            self.host_configs[alias] = {"host": host, "port": port, "user": user}
-                            self.host_groups[alias] = current_group; self.tree_store.append(group_iter, [f"SFTP: {alias}", "host"])
-                    else:
-                        self.host_groups[line] = current_group; self.tree_store.append(group_iter, [line, "host"])
+                            self.host_configs[alias] = {"host": host, "port": port, "user": user}; self.host_groups[alias] = current_group; self.tree_store.append(group_iter, [f"SFTP: {alias}", "host"])
+                    else: self.host_groups[line] = current_group; self.tree_store.append(group_iter, [line, "host"])
         self.tree_view.expand_all()
 
     def on_tree_item_activated(self, tree_view, path, column):
-        model = tree_view.get_model(); iter = model.get_iter(path)
-        label, type = model.get(iter, 0, 1)
+        model = tree_view.get_model(); iter = model.get_iter(path); label, type = model.get(iter, 0, 1)
         if type == "host":
             if label.startswith("SFTP: "): label = label[6:]
             self.add_host_tab(label)
-            # Find the newly added tab widget and focus its password field
-            term = self.host_widgets[label]
-            term.pwd_entry.grab_focus()
 
     def add_host_tab(self, host):
-        if host in self.host_widgets:
-            self.notebook.set_current_page(self.notebook.page_num(self.host_widgets[host]))
-            return
+        if host in self.host_widgets: self.notebook.set_current_page(self.notebook.page_num(self.host_widgets[host])); return
         term = HostTerminal(host, self, self.host_configs.get(host))
-        lbl_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
-        lbl_box.pack_start(Gtk.Label(label=host), False, False, 0)
-        close_btn = Gtk.Button.new_from_icon_name("window-close-symbolic", Gtk.IconSize.MENU)
-        close_btn.set_relief(Gtk.ReliefStyle.NONE); close_btn.connect("clicked", lambda x: self.close_tab(host))
-        lbl_box.pack_start(close_btn, False, False, 0); lbl_box.show_all()
-        new_index = self.notebook.append_page(term, lbl_box)
-        self.host_widgets[host] = term; self.notebook.show_all(); self.notebook.set_current_page(new_index)
+        lbl_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5); lbl_box.pack_start(Gtk.Label(label=host), False, False, 0)
+        c_btn = Gtk.Button.new_from_icon_name("window-close-symbolic", Gtk.IconSize.MENU); c_btn.set_relief(Gtk.ReliefStyle.NONE); c_btn.connect("clicked", lambda x: self.close_tab(host)); lbl_box.pack_start(c_btn, False, False, 0); lbl_box.show_all()
+        new_index = self.notebook.append_page(term, lbl_box); self.host_widgets[host] = term; self.notebook.show_all(); self.notebook.set_current_page(new_index)
 
     def close_tab(self, host):
-        if host in self.host_widgets:
-            self.notebook.remove_page(self.notebook.page_num(self.host_widgets[host]))
-            del self.host_widgets[host]
+        if host in self.host_widgets: self.notebook.remove_page(self.notebook.page_num(self.host_widgets[host])); del self.host_widgets[host]
+
+    def update_host_status(self, host, state): pass
 
     def on_broadcast(self, widget):
         cmd = self.broadcast_entry.get_text(); self.broadcast_entry.set_text("")
         if cmd: self.b_history.append(cmd); self.b_history_index = len(self.b_history)
-        selected_group = self.group_combo.get_active_text()
         for host, term in self.host_widgets.items():
-            if term.started and (selected_group == "All Groups" or self.host_groups.get(host) == selected_group):
-                term.send_string(cmd + "\n")
+            if term.shell: term.shell.send(cmd + "\n")
 
     def on_broadcast_key_press(self, widget, event):
         if not self.b_history: return False
         if event.keyval == Gdk.KEY_Up:
-            self.b_history_index = max(0, self.b_history_index - 1)
-            self.broadcast_entry.set_text(self.b_history[self.b_history_index]); return True
+            self.b_history_index = max(0, self.b_history_index - 1); self.broadcast_entry.set_text(self.b_history[self.b_history_index]); return True
         elif event.keyval == Gdk.KEY_Down:
-            self.b_history_index = min(len(self.b_history), self.b_history_index + 1)
-            self.broadcast_entry.set_text(self.b_history[self.b_history_index] if self.b_history_index < len(self.b_history) else ""); return True
+            self.b_history_index = min(len(self.b_history), self.b_history_index + 1); self.broadcast_entry.set_text(self.b_history[self.b_history_index] if self.b_history_index < len(self.b_history) else ""); return True
         return False
 
     def apply_styles(self):
         css = b".broadcast-bar { background-color: #2c3e50; padding: 10px; border-radius: 5px; }"
-        provider = Gtk.CssProvider(); provider.load_from_data(css)
-        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        provider = Gtk.CssProvider(); provider.load_from_data(css); Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
 if __name__ == "__main__":
     win = SSHGui(); win.show_all(); Gtk.main()
