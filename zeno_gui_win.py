@@ -294,7 +294,7 @@ class ZenoSSHWin(ctk.CTk):
         super().__init__(); self.title("Zeno-SSH Explorer"); self.geometry("1200x800")
         if getattr(sys, 'frozen', False): self.base_dir = os.path.dirname(sys.executable)
         else: self.base_dir = os.path.dirname(os.path.abspath(__file__))
-        icon_path = os.path.join(self.base_dir, "final_zeno.ico")
+        icon_path = os.path.join(self.base_dir, "zeno_icon_v1.ico")
         if os.path.exists(icon_path):
             try: self.iconbitmap(icon_path)
             except: pass
