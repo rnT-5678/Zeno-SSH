@@ -35,5 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['zenossh.ico'],
+    icon=['final_zeno.ico'],
 )
