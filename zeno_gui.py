@@ -266,7 +266,7 @@ class SSHGui(Gtk.Window):
         self.b_history = []; self.b_history_index = -1
         self.group_combo = Gtk.ComboBoxText(); self.group_combo.append_text("All Groups"); self.group_combo.set_active(0)
         b_box.pack_start(self.group_combo, False, False, 0)
-        self.broadcast_entry = Gtk.Entry(placeholder_text="Broadcast command...")
+        self.broadcast_entry = Gtk.Entry(placeholder_text="Broadcast to all active terminal sessions...")
         self.broadcast_entry.connect("activate", self.on_broadcast)
         self.broadcast_entry.connect("key-press-event", self.on_broadcast_key_press)
         b_box.pack_start(self.broadcast_entry, True, True, 0)

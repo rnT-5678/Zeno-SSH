@@ -331,7 +331,7 @@ class ZenoSSHWin(ctk.CTk):
         self.broadcast_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
         self.b_history = []
         self.b_history_index = -1
-        self.broadcast_entry = ctk.CTkEntry(self.broadcast_frame, placeholder_text="Broadcast command to all active tabs...")
+        self.broadcast_entry = ctk.CTkEntry(self.broadcast_frame, placeholder_text="Broadcast to all active terminal sessions...")
         self.broadcast_entry.pack(side="left", fill="x", expand=True, padx=5)
         self.broadcast_entry.bind("<Return>", self.broadcast_command)
         self.broadcast_entry.bind("<Up>", self.navigate_broadcast_history)
