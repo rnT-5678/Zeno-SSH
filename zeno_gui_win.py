@@ -7,6 +7,7 @@ import sys
 import time
 import re
 import stat
+import fnmatch
 
 class HostTerminal(ctk.CTkFrame):
     def __init__(self, master, host, user, password=None, identity=None, base_dir=None):
@@ -47,12 +48,15 @@ class HostTerminal(ctk.CTkFrame):
 
         # SFTP Browser Tab
         self.sftp_frame = ctk.CTkFrame(self.tab_container.tab("SFTP Browser")); self.sftp_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        
         sftp_tool = ctk.CTkFrame(self.sftp_frame, fg_color="transparent"); sftp_tool.pack(fill="x", pady=5)
         ctk.CTkButton(sftp_tool, text="⟳ Refresh", width=80, command=self.refresh_sftp).pack(side="left", padx=2)
-        self.search_entry = ctk.CTkEntry(sftp_tool, placeholder_text="Recursive Search Pattern...", width=200); self.search_entry.pack(side="left", padx=5)
+        self.search_entry = ctk.CTkEntry(sftp_tool, placeholder_text="Search (e.g. *.log)...", width=200); self.search_entry.pack(side="left", padx=5)
         ctk.CTkButton(sftp_tool, text="🔍 Search", width=80, command=self.sftp_search).pack(side="left")
         
         self.exp_container = ctk.CTkFrame(self.sftp_frame, fg_color="transparent"); self.exp_container.pack(fill="both", expand=True)
+        
+        # Local
         self.l_side = ctk.CTkFrame(self.exp_container); self.l_side.pack(side="left", fill="both", expand=True, padx=2)
         self.l_path_lbl = ctk.CTkLabel(self.l_side, text=f"Local: {self.local_cwd}", font=ctk.CTkFont(size=10), anchor="w"); self.l_path_lbl.pack(fill="x", padx=5)
         self.l_list = ctk.CTkScrollableFrame(self.l_side, fg_color="#1a1a1a"); self.l_list.pack(fill="both", expand=True)
@@ -61,12 +65,17 @@ class HostTerminal(ctk.CTkFrame):
         ctk.CTkButton(mid_btns, text="→", width=40, command=self.do_upload).pack(pady=10)
         ctk.CTkButton(mid_btns, text="←", width=40, command=self.do_download).pack(pady=10)
         
+        # Remote
         self.r_side = ctk.CTkFrame(self.exp_container); self.r_side.pack(side="left", fill="both", expand=True, padx=2)
         self.r_path_lbl = ctk.CTkLabel(self.r_side, text=f"Remote: {self.remote_cwd}", font=ctk.CTkFont(size=10), anchor="w"); self.r_path_lbl.pack(fill="x", padx=5)
         self.r_list = ctk.CTkScrollableFrame(self.r_side, fg_color="#1a1a1a"); self.r_list.pack(fill="both", expand=True)
         
+        # Dialogue Log with clickable results
         self.sftp_log = ctk.CTkTextbox(self.sftp_frame, height=100, font=("Courier New", 11), fg_color="#000")
         self.sftp_log.pack(fill="x", pady=(5, 0)); self.sftp_log.configure(state="disabled")
+        self.sftp_log._textbox.tag_config("clickable", foreground="#3498db", underline=True)
+        self.sftp_log._textbox.bind("<Button-1>", self.on_log_click)
+        self.click_map = {} # line_start -> path
 
         # SCP Tab
         self.scp_frame = ctk.CTkFrame(self.tab_container.tab("SCP")); self.scp_frame.pack(fill="both", expand=True, padx=10, pady=10)
@@ -78,15 +87,27 @@ class HostTerminal(ctk.CTkFrame):
         
         self.status_callback = None
 
-    def log_transfer(self, protocol, msg):
-        # Thread-safe logging
-        self.after(0, self._log_callback, protocol, msg)
+    def log_transfer(self, protocol, msg, path_jump=None):
+        self.after(0, self._log_callback, protocol, msg, path_jump)
 
-    def _log_callback(self, protocol, msg):
+    def _log_callback(self, protocol, msg, path_jump=None):
         log = self.sftp_log if protocol == "SFTP" else self.scp_log
         log.configure(state="normal")
-        log.insert("end", f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+        start_idx = log.index("end-1c")
+        full_msg = f"[{time.strftime('%H:%M:%S')}] {msg}\n"
+        log.insert("end", full_msg)
+        if path_jump:
+            end_idx = log.index("end-1c")
+            log._textbox.tag_add("clickable", start_idx, end_idx)
+            self.click_map[float(start_idx.split('.')[0])] = path_jump
         log.see("end"); log.configure(state="disabled")
+
+    def on_log_click(self, event):
+        idx = self.sftp_log._textbox.index(f"@{event.x},{event.y}")
+        line = float(idx.split('.')[0])
+        if line in self.click_map:
+            self.remote_cwd = self.click_map[line]
+            self.refresh_sftp()
 
     def start_connection(self):
         self.user = self.user_var.get(); self.password = self.pwd_var.get()
@@ -103,17 +124,13 @@ class HostTerminal(ctk.CTkFrame):
             self.log_transfer("SFTP", f"Connecting to {self.host}:{self.port}...")
             self.client = paramiko.SSHClient()
             self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            # Connection logic
             self.client.connect(self.host, self.port, self.user, self.password, timeout=15, banner_timeout=30)
-            
             self.sftp = self.client.open_sftp()
             self.shell = self.client.invoke_shell(term='xterm-256color')
-            
             self.log_transfer("SFTP", "SUCCESS: Connection established.")
             self.after(0, lambda: self.conn_btn.configure(text="Connected"))
             self.after(0, self.refresh_sftp)
             if self.status_callback: self.after(0, lambda: self.status_callback(self.host, "success"))
-            
             while self.shell:
                 if self.shell.recv_ready():
                     data = self.shell.recv(8192).decode('utf-8', errors='ignore')
@@ -130,8 +147,7 @@ class HostTerminal(ctk.CTkFrame):
         try:
             items = [".."] + sorted(os.listdir(self.local_cwd))
             for item in items:
-                path = os.path.join(self.local_cwd, item)
-                is_dir = os.path.isdir(path)
+                path = os.path.join(self.local_cwd, item); is_dir = os.path.isdir(path)
                 color = "#3498db" if is_dir else "#ecf0f1"
                 btn = ctk.CTkButton(self.l_list, text=f"{'📁' if is_dir else '📄'} {item}", fg_color="transparent", text_color=color, anchor="w", height=20, command=lambda p=path, i=item: self.on_local_click(p, i))
                 btn.pack(fill="x")
@@ -151,8 +167,7 @@ class HostTerminal(ctk.CTkFrame):
             items = [".."] + sorted(self.sftp.listdir())
             for item in items:
                 try:
-                    attr = self.sftp.stat(item)
-                    is_dir = stat.S_ISDIR(attr.st_mode)
+                    attr = self.sftp.stat(item); is_dir = stat.S_ISDIR(attr.st_mode)
                     color = "#e67e22" if is_dir else "#2ecc71"
                     btn = ctk.CTkButton(self.r_list, text=f"{'📁' if is_dir else '📄'} {item}", fg_color="transparent", text_color=color, anchor="w", height=20, command=lambda i=item: self.on_remote_click(i))
                     btn.pack(fill="x")
@@ -170,9 +185,7 @@ class HostTerminal(ctk.CTkFrame):
                 if stat.S_ISDIR(attr.st_mode):
                     self.remote_cwd = (self.remote_cwd.rstrip("/") + "/" + item).replace("//", "/")
                     self.refresh_sftp()
-                else:
-                    self.selected_remote = item
-                    self.log_transfer("SFTP", f"Selected Remote: {item}")
+                else: self.selected_remote = item; self.log_transfer("SFTP", f"Selected Remote: {item}")
             except: pass
 
     def do_upload(self):
@@ -208,24 +221,24 @@ class HostTerminal(ctk.CTkFrame):
         pattern = self.search_entry.get().strip()
         if not pattern or not self.sftp: return
         threading.Thread(target=self._search_thread, args=(pattern,), daemon=True).start()
-def _search_thread(self, pattern):
-    self.log_transfer("SFTP", f"SEARCH: Scanning for '{pattern}'...")
-    self.found_first_match = False
-    def find(path):
-        try:
-            for entry in self.sftp.listdir_attr(path):
-                full = (path.rstrip("/") + "/" + entry.filename)
-                if pattern.lower() in entry.filename.lower():
-                    self.log_transfer("SFTP", f"MATCH: {full}")
-                    # Auto-CD to the first match found
-                    if not self.found_first_match:
-                        self.found_first_match = True
-                        self.remote_cwd = path
-                        self.after(0, self.refresh_sftp)
-                if stat.S_ISDIR(entry.st_mode): find(full)
-        except: pass
-    find(self.remote_cwd); self.log_transfer("SFTP", "SEARCH: Finished.")
 
+    def _search_thread(self, pattern):
+        self.log_transfer("SFTP", f"SEARCH: Scanning for '{pattern}'...")
+        self.found_first_match = False
+        def find(path):
+            try:
+                for entry in self.sftp.listdir_attr(path):
+                    full = (path.rstrip("/") + "/" + entry.filename).replace("//", "/")
+                    # Support wildcards (*) using fnmatch
+                    if fnmatch.fnmatch(entry.filename.lower(), pattern.lower()) or pattern.lower() in entry.filename.lower():
+                        self.log_transfer("SFTP", f"MATCH: {full}", path_jump=path)
+                        if not self.found_first_match:
+                            self.found_first_match = True
+                            self.remote_cwd = path
+                            self.after(0, self.refresh_sftp)
+                    if stat.S_ISDIR(entry.st_mode): find(full)
+            except: pass
+        find(self.remote_cwd); self.log_transfer("SFTP", "SEARCH: Finished.")
 
     def send_command(self, event=None):
         cmd = self.entry.get(); self.entry.delete(0, 'end')
@@ -249,19 +262,12 @@ def _search_thread(self, pattern):
 class ZenoSSHWin(ctk.CTk):
     def __init__(self):
         super().__init__(); self.title("Zeno-SSH Explorer"); self.geometry("1200x800")
-        
-        # Load icon if available
-        if getattr(sys, 'frozen', False):
-            self.base_dir = os.path.dirname(sys.executable)
-        else:
-            self.base_dir = os.path.dirname(os.path.abspath(__file__))
-        
+        if getattr(sys, 'frozen', False): self.base_dir = os.path.dirname(sys.executable)
+        else: self.base_dir = os.path.dirname(os.path.abspath(__file__))
         icon_path = os.path.join(self.base_dir, "zenossh.ico")
         if os.path.exists(icon_path):
-            try:
-                self.iconbitmap(icon_path)
+            try: self.iconbitmap(icon_path)
             except: pass
-            
         self.grid_columnconfigure(1, weight=1); self.grid_rowconfigure(0, weight=1)
         self.sidebar = ctk.CTkFrame(self, width=200); self.sidebar.grid(row=0, column=0, sticky="nsew")
         ctk.CTkLabel(self.sidebar, text="Zeno-SSH", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=20)
@@ -274,8 +280,6 @@ class ZenoSSHWin(ctk.CTk):
         self.broadcast_entry = ctk.CTkEntry(self.main_frame, placeholder_text="Broadcast to all active terminal sessions..."); self.broadcast_entry.grid(row=1, column=0, sticky="ew", padx=10, pady=5); self.broadcast_entry.bind("<Return>", self.broadcast_command)
         self.config_text = ctk.CTkTextbox(self.tabview.tab("Config")); self.config_text.pack(fill="both", expand=True)
         ctk.CTkButton(self.tabview.tab("Config"), text="Save & Reload", command=self.save_hosts).pack(pady=5)
-        if getattr(sys, 'frozen', False): self.base_dir = os.path.dirname(sys.executable)
-        else: self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.hosts_path = os.path.join(self.base_dir, "hosts.txt"); self.terminals = {}; self.host_configs = {}
         self.ensure_hosts_file(); self.load_hosts()
 
