@@ -54,6 +54,7 @@ class HostTerminal(Gtk.Box):
         # SFTP Browser Tab
         sftp_main = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5); sftp_main.set_margin_all(5)
         sftp_tool = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        h_btn = Gtk.Button(label="🏠 Home"); h_btn.connect("clicked", lambda x: self.go_home()); sftp_tool.pack_start(h_btn, False, False, 0)
         ref_btn = Gtk.Button(label="⟳ Refresh"); ref_btn.connect("clicked", lambda x: self.refresh_sftp()); sftp_tool.pack_start(ref_btn, False, False, 0)
         self.search_entry = Gtk.Entry(placeholder_text="Search (e.g. *.log)..."); sftp_tool.pack_start(self.search_entry, True, True, 0)
         src_btn = Gtk.Button(label="🔍 Search"); src_btn.connect("clicked", lambda x: self.on_search_clicked()); sftp_tool.pack_start(src_btn, False, False, 0)
@@ -80,12 +81,20 @@ class HostTerminal(Gtk.Box):
         r_scroll = Gtk.ScrolledWindow(); self.r_list = Gtk.ListBox(); r_scroll.add(self.r_list); r_box.pack_start(r_scroll, True, True, 0)
         paned.pack_start(r_box, True, True, 0)
         
-        # Dialogue Log with Tags
+        # Dialogue Log
         log_scroll = Gtk.ScrolledWindow(); self.sftp_log_view = Gtk.TextView(editable=False); self.sftp_log_view.set_size_request(-1, 100); log_scroll.add(self.sftp_log_view); sftp_main.pack_start(log_scroll, False, False, 0)
         self.log_tag_table = self.sftp_log_view.get_buffer().get_tag_table()
         
         self.inner_notebook.append_page(sftp_main, Gtk.Label(label="SFTP Browser"))
         self.update_local_list()
+
+    def go_home(self):
+        self.remote_cwd = "."
+        if self.sftp:
+            try: self.remote_cwd = self.sftp.normalize(".")
+            except: pass
+        self.refresh_sftp()
+        self.log_transfer("SFTP", "Navigated to Home (~)")
 
     def log_transfer(self, protocol, msg, path_jump=None):
         GLib.idle_add(self._log_idle, msg, path_jump)
@@ -94,20 +103,17 @@ class HostTerminal(Gtk.Box):
         buf = self.sftp_log_view.get_buffer()
         iter = buf.get_end_iter()
         full_msg = f"[{time.strftime('%H:%M:%S')}] {msg}\n"
-        
         if path_jump:
             tag = Gtk.TextTag(); tag.set_property("foreground", "#3498db"); tag.set_property("underline", Pango.Underline.SINGLE)
             tag.connect("event", self.on_tag_event, path_jump)
             self.log_tag_table.add(tag)
             buf.insert_with_tags(iter, full_msg, tag)
-        else:
-            buf.insert(iter, full_msg)
+        else: buf.insert(iter, full_msg)
         return False
 
     def on_tag_event(self, tag, widget, event, iter, path):
         if event.type == Gdk.EventType.BUTTON_PRESS:
-            self.remote_cwd = path; self.refresh_sftp()
-            return True
+            self.remote_cwd = path; self.refresh_sftp(); return True
         return False
 
     def update_local_list(self):
