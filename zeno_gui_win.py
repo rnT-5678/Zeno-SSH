@@ -58,6 +58,8 @@ class HostTerminal(ctk.CTkFrame):
         
         # Split Explorer
         self.exp_container = ctk.CTkFrame(self.sftp_frame, fg_color="transparent"); self.exp_container.pack(fill="both", expand=True)
+        
+        # Local
         self.l_side = ctk.CTkFrame(self.exp_container); self.l_side.pack(side="left", fill="both", expand=True, padx=2)
         self.l_path_lbl = ctk.CTkLabel(self.l_side, text=f"Local: {self.local_cwd}", font=ctk.CTkFont(size=10), anchor="w"); self.l_path_lbl.pack(fill="x", padx=5)
         self.l_list = ctk.CTkScrollableFrame(self.l_side, fg_color="#1a1a1a"); self.l_list.pack(fill="both", expand=True)
@@ -66,6 +68,7 @@ class HostTerminal(ctk.CTkFrame):
         ctk.CTkButton(mid_btns, text="→", width=40, command=self.do_upload).pack(pady=10)
         ctk.CTkButton(mid_btns, text="←", width=40, command=self.do_download).pack(pady=10)
         
+        # Remote
         self.r_side = ctk.CTkFrame(self.exp_container); self.r_side.pack(side="left", fill="both", expand=True, padx=2)
         self.r_path_lbl = ctk.CTkLabel(self.r_side, text=f"Remote: {self.remote_cwd}", font=ctk.CTkFont(size=10), anchor="w"); self.r_path_lbl.pack(fill="x", padx=5)
         self.r_list = ctk.CTkScrollableFrame(self.r_side, fg_color="#1a1a1a"); self.r_list.pack(fill="both", expand=True)
@@ -156,14 +159,23 @@ class HostTerminal(ctk.CTkFrame):
             for item in items:
                 path = os.path.join(self.local_cwd, item); is_dir = os.path.isdir(path)
                 color = "#3498db" if is_dir else "#ecf0f1"
-                btn = ctk.CTkButton(self.l_list, text=f"{'📁' if is_dir else '📄'} {item}", fg_color="transparent", text_color=color, anchor="w", height=20, command=lambda p=path, i=item: self.on_local_click(p, i))
+                # Use a button but also bind double-click for folder navigation
+                btn = ctk.CTkButton(self.l_list, text=f"{'📁' if is_dir else '📄'} {item}", 
+                                   fg_color="transparent", text_color=color, anchor="w", height=20,
+                                   command=lambda p=path, i=item: self.on_local_click(p, i))
+                btn.bind("<Double-Button-1>", lambda e, p=path, i=item: self.on_local_double_click(p, i))
                 btn.pack(fill="x")
         except Exception as e: self.log_transfer("SFTP", f"Local Error: {e}")
 
     def on_local_click(self, path, item):
-        if item == "..": self.local_cwd = os.path.dirname(self.local_cwd); self.update_local_list()
-        elif os.path.isdir(path): self.local_cwd = path; self.update_local_list()
-        else: self.selected_local = path; self.log_transfer("SFTP", f"Selected Local: {item}")
+        if not os.path.isdir(path):
+            self.selected_local = path
+            self.log_transfer("SFTP", f"Selected Local: {item}")
+
+    def on_local_double_click(self, path, item):
+        if item == "..": self.local_cwd = os.path.dirname(self.local_cwd)
+        elif os.path.isdir(path): self.local_cwd = path
+        self.update_local_list()
 
     def refresh_sftp(self):
         if not self.sftp: return
@@ -175,12 +187,24 @@ class HostTerminal(ctk.CTkFrame):
                 try:
                     attr = self.sftp.stat(item); is_dir = stat.S_ISDIR(attr.st_mode)
                     color = "#e67e22" if is_dir else "#2ecc71"
-                    btn = ctk.CTkButton(self.r_list, text=f"{'📁' if is_dir else '📄'} {item}", fg_color="transparent", text_color=color, anchor="w", height=20, command=lambda i=item: self.on_remote_click(i))
+                    btn = ctk.CTkButton(self.r_list, text=f"{'📁' if is_dir else '📄'} {item}", 
+                                       fg_color="transparent", text_color=color, anchor="w", height=20,
+                                       command=lambda i=item: self.on_remote_click(i))
+                    btn.bind("<Double-Button-1>", lambda e, i=item: self.on_remote_double_click(i))
                     btn.pack(fill="x")
                 except: pass
         except Exception as e: self.log_transfer("SFTP", f"Remote Error: {e}")
 
     def on_remote_click(self, item):
+        if item != "..":
+            try:
+                attr = self.sftp.stat(item)
+                if not stat.S_ISDIR(attr.st_mode):
+                    self.selected_remote = item
+                    self.log_transfer("SFTP", f"Selected Remote: {item}")
+            except: pass
+
+    def on_remote_double_click(self, item):
         if item == "..":
             self.remote_cwd = os.path.dirname(self.remote_cwd).replace("\\", "/")
             if not self.remote_cwd or self.remote_cwd == ".": self.remote_cwd = "/"
@@ -188,8 +212,12 @@ class HostTerminal(ctk.CTkFrame):
         else:
             try:
                 attr = self.sftp.stat(item)
-                if stat.S_ISDIR(attr.st_mode): self.remote_cwd = (self.remote_cwd.rstrip("/") + "/" + item).replace("//", "/"); self.refresh_sftp()
-                else: self.selected_remote = item; self.log_transfer("SFTP", f"Selected Remote: {item}")
+                if stat.S_ISDIR(attr.st_mode):
+                    self.remote_cwd = (self.remote_cwd.rstrip("/") + "/" + item).replace("//", "/")
+                    self.refresh_sftp()
+                else: # Double click file = Download
+                    self.selected_remote = item
+                    self.do_download()
             except: pass
 
     def do_upload(self):
@@ -227,14 +255,17 @@ class HostTerminal(ctk.CTkFrame):
 
     def _search_thread(self, pattern):
         self.log_transfer("SFTP", f"SEARCH: Scanning for '{pattern}'...")
-        self.found_first = False
+        self.found_first_match = False
         def find(path):
             try:
                 for entry in self.sftp.listdir_attr(path):
                     full = (path.rstrip("/") + "/" + entry.filename).replace("//", "/")
                     if fnmatch.fnmatch(entry.filename.lower(), pattern.lower()) or pattern.lower() in entry.filename.lower():
                         self.log_transfer("SFTP", f"MATCH: {full}", path_jump=path)
-                        if not self.found_first: self.found_first = True; self.remote_cwd = path; self.after(0, self.refresh_sftp)
+                        if not self.found_first_match:
+                            self.found_first_match = True
+                            self.remote_cwd = path
+                            self.after(0, self.refresh_sftp)
                     if stat.S_ISDIR(entry.st_mode): find(full)
             except: pass
         find(self.remote_cwd); self.log_transfer("SFTP", "SEARCH: Finished.")
