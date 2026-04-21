@@ -208,17 +208,24 @@ class HostTerminal(ctk.CTkFrame):
         pattern = self.search_entry.get().strip()
         if not pattern or not self.sftp: return
         threading.Thread(target=self._search_thread, args=(pattern,), daemon=True).start()
+def _search_thread(self, pattern):
+    self.log_transfer("SFTP", f"SEARCH: Scanning for '{pattern}'...")
+    self.found_first_match = False
+    def find(path):
+        try:
+            for entry in self.sftp.listdir_attr(path):
+                full = (path.rstrip("/") + "/" + entry.filename)
+                if pattern.lower() in entry.filename.lower():
+                    self.log_transfer("SFTP", f"MATCH: {full}")
+                    # Auto-CD to the first match found
+                    if not self.found_first_match:
+                        self.found_first_match = True
+                        self.remote_cwd = path
+                        self.after(0, self.refresh_sftp)
+                if stat.S_ISDIR(entry.st_mode): find(full)
+        except: pass
+    find(self.remote_cwd); self.log_transfer("SFTP", "SEARCH: Finished.")
 
-    def _search_thread(self, pattern):
-        self.log_transfer("SFTP", f"SEARCH: Scanning for '{pattern}'...")
-        def find(path):
-            try:
-                for entry in self.sftp.listdir_attr(path):
-                    full = (path.rstrip("/") + "/" + entry.filename).replace("//", "/")
-                    if pattern.lower() in entry.filename.lower(): self.log_transfer("SFTP", f"MATCH: {full}")
-                    if stat.S_ISDIR(entry.st_mode): find(full)
-            except: pass
-        find(self.remote_cwd); self.log_transfer("SFTP", "SEARCH: Finished.")
 
     def send_command(self, event=None):
         cmd = self.entry.get(); self.entry.delete(0, 'end')
@@ -242,6 +249,19 @@ class HostTerminal(ctk.CTkFrame):
 class ZenoSSHWin(ctk.CTk):
     def __init__(self):
         super().__init__(); self.title("Zeno-SSH Explorer"); self.geometry("1200x800")
+        
+        # Load icon if available
+        if getattr(sys, 'frozen', False):
+            self.base_dir = os.path.dirname(sys.executable)
+        else:
+            self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        icon_path = os.path.join(self.base_dir, "zenossh.ico")
+        if os.path.exists(icon_path):
+            try:
+                self.iconbitmap(icon_path)
+            except: pass
+            
         self.grid_columnconfigure(1, weight=1); self.grid_rowconfigure(0, weight=1)
         self.sidebar = ctk.CTkFrame(self, width=200); self.sidebar.grid(row=0, column=0, sticky="nsew")
         ctk.CTkLabel(self.sidebar, text="Zeno-SSH", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=20)
