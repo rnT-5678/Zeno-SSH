@@ -188,6 +188,15 @@ class HostTerminal(ctk.CTkFrame):
                 else: self.selected_remote = item; self.log_transfer("SFTP", f"Selected Remote: {item}")
             except: pass
 
+    def go_home(self):
+        self.remote_cwd = "."
+        if self.sftp:
+            try:
+                self.remote_cwd = self.sftp.normalize(".")
+            except: pass
+        self.refresh_sftp()
+        self.log_transfer("SFTP", "Navigated to Home (~)")
+
     def do_upload(self):
         if not self.selected_local or not self.sftp: return
         dest = (self.remote_cwd.rstrip("/") + "/" + os.path.basename(self.selected_local)).replace("//", "/")
