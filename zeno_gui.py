@@ -130,14 +130,12 @@ class HostTerminal(Gtk.Box):
 
     def on_local_row_activated(self, listbox, row):
         item = row.get_child().get_text()[3:]
-        if item == "..": self.local_cwd = os.path.dirname(self.local_cwd)
-        else:
-            path = os.path.join(self.local_cwd, item)
-            if os.path.isdir(path): self.local_cwd = path
-            else: self.selected_local = path; self.log_transfer("SFTP", f"Selected Local: {item}")
-        self.update_local_list()
+        path = os.path.join(self.local_cwd, item)
+        if item == "..": self.local_cwd = os.path.dirname(self.local_cwd); self.update_local_list()
+        elif os.path.isdir(path): self.local_cwd = path; self.update_local_list()
+        else: self.selected_local = path; self.log_transfer("SFTP", f"Selected Local: {item}")
 
-    def refresh_sftp(self):
+    def refresh_sftp(self, highlight=None):
         if not self.sftp: return
         for child in self.r_list.get_children(): self.r_list.remove(child)
         self.r_path_lbl.set_text(f"Remote: {self.remote_cwd}")
@@ -146,22 +144,28 @@ class HostTerminal(Gtk.Box):
             for item in items:
                 try:
                     attr = self.sftp.stat(item); is_dir = stat.S_ISDIR(attr.st_mode)
-                    lbl = Gtk.Label(label=f"{'📁' if is_dir else '📄'} {item}", xalign=0)
+                    color = "#e67e22" if is_dir else "#2ecc71"
+                    if highlight and item == highlight: color = "#f1c40f"
+                    
+                    lbl = Gtk.Label(xalign=0); lbl.set_markup(f"<span foreground='{color}'>{'📁' if is_dir else '📄'} {item}</span>")
                     row = Gtk.ListBoxRow(); row.add(lbl); row.show_all(); self.r_list.add(row)
                 except: pass
             self.r_list.connect("row-activated", self.on_remote_row_activated)
         except Exception as e: self.log_transfer("SFTP", f"Remote Error: {e}")
 
     def on_remote_row_activated(self, listbox, row):
-        item = row.get_child().get_text()[3:]
+        # Extract name from markup span
+        text = row.get_child().get_label()
+        item = re.sub('<[^<]+?>', '', text)[3:]
         if item == "..":
             self.remote_cwd = os.path.dirname(self.remote_cwd).replace("\\", "/")
-            if not self.remote_cwd or self.remote_cwd == ".": self.remote_cwd = "/"; self.refresh_sftp()
+            if not self.remote_cwd or self.remote_cwd == ".": self.remote_cwd = "/"
+            self.refresh_sftp()
         else:
             try:
                 attr = self.sftp.stat(item)
                 if stat.S_ISDIR(attr.st_mode): self.remote_cwd = (self.remote_cwd.rstrip("/") + "/" + item); self.refresh_sftp()
-                else: self.selected_remote = item; self.log_transfer("SFTP", f"Selected Remote: {item}")
+                else: self.selected_remote = item; self.do_download()
             except: pass
 
     def on_search_clicked(self):
@@ -178,7 +182,7 @@ class HostTerminal(Gtk.Box):
                     full = (path.rstrip("/") + "/" + entry.filename)
                     if fnmatch.fnmatch(entry.filename.lower(), pattern.lower()) or pattern.lower() in entry.filename.lower():
                         self.log_transfer("SFTP", f"MATCH: {full}", path_jump=path)
-                        if not self.found_first: self.found_first = True; self.remote_cwd = path; GLib.idle_add(self.refresh_sftp)
+                        if not self.found_first: self.found_first = True; self.remote_cwd = path; GLib.idle_add(self.refresh_sftp, entry.filename)
                     if stat.S_ISDIR(entry.st_mode): find(full)
             except: pass
         find(self.remote_cwd); self.log_transfer("SFTP", "Search finished.")
@@ -275,7 +279,7 @@ class SSHGui(Gtk.Window):
                 for line in f:
                     line = line.strip()
                     if not line or line.startswith("#"): continue
-                    if line.startswith("["): current_group = line[1:-1]; group_iter = self.tree_store.append(None, [current_group.upper(), "group"]); continue
+                    if line.startswith("["): current_group = line[1:-1]; group_iter = self.tree_store.append(None, [current_group.upper(), "group"]); self.group_combo.append_text(current_group); continue
                     if "|" in line:
                         p = [x.strip() for x in line.split("|")]
                         if len(p) >= 2:
