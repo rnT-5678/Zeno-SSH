@@ -67,7 +67,7 @@ class HostTerminal(Gtk.Box):
         # Local
         l_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         self.l_path_lbl = Gtk.Label(xalign=0); l_box.pack_start(self.l_path_lbl, False, False, 0)
-        l_scroll = Gtk.ScrolledWindow(); self.l_list = Gtk.ListBox(); l_scroll.add(self.l_list); l_box.pack_start(l_scroll, True, True, 0)
+        self.l_scroll = Gtk.ScrolledWindow(); self.l_list = Gtk.ListBox(); self.l_scroll.add(self.l_list); l_box.pack_start(self.l_scroll, True, True, 0)
         paned.pack_start(l_box, True, True, 0)
 
         # Transfer Buttons (Middle)
@@ -79,7 +79,7 @@ class HostTerminal(Gtk.Box):
         # Remote
         r_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         self.r_path_lbl = Gtk.Label(xalign=0); r_box.pack_start(self.r_path_lbl, False, False, 0)
-        r_scroll = Gtk.ScrolledWindow(); self.r_list = Gtk.ListBox(); r_scroll.add(self.r_list); r_box.pack_start(r_scroll, True, True, 0)
+        self.r_scroll = Gtk.ScrolledWindow(); self.r_list = Gtk.ListBox(); self.r_scroll.add(self.r_list); r_box.pack_start(self.r_scroll, True, True, 0)
         paned.pack_start(r_box, True, True, 0)
         
         # Dialogue Log
@@ -93,9 +93,13 @@ class HostTerminal(Gtk.Box):
         self.remote_cwd = "."
         if self.sftp:
             try: self.remote_cwd = self.sftp.normalize(".")
-            except: pass
-        self.refresh_sftp()
-        self.log_transfer("SFTP", "Navigated to Home (~)")
+            except: self.remote_cwd = "/"
+        self.log_transfer("SFTP", f"Navigating to Home: {self.remote_cwd}")
+        # Clear list immediately
+        for child in self.r_list.get_children(): self.r_list.remove(child)
+        self.r_list.add(Gtk.Label(label="Loading...", xalign=0.5))
+        self.r_list.show_all()
+        GLib.timeout_add(100, self.refresh_sftp)
 
     def log_transfer(self, protocol, msg, path_jump=None):
         GLib.idle_add(self._log_idle, msg, path_jump)
@@ -120,6 +124,7 @@ class HostTerminal(Gtk.Box):
     def update_local_list(self):
         for child in self.l_list.get_children(): self.l_list.remove(child)
         self.l_path_lbl.set_text(f"Local: {self.local_cwd}")
+        adj = self.l_scroll.get_vadjustment(); adj.set_value(adj.get_lower())
         try:
             items = [".."] + sorted(os.listdir(self.local_cwd))
             for item in items:
@@ -140,6 +145,7 @@ class HostTerminal(Gtk.Box):
         if not self.sftp: return
         for child in self.r_list.get_children(): self.r_list.remove(child)
         self.r_path_lbl.set_text(f"Remote: {self.remote_cwd}")
+        adj = self.r_scroll.get_vadjustment(); adj.set_value(adj.get_lower())
         try:
             self.sftp.chdir(self.remote_cwd); items = [".."] + sorted(self.sftp.listdir())
             for item in items:
@@ -147,7 +153,6 @@ class HostTerminal(Gtk.Box):
                     attr = self.sftp.stat(item); is_dir = stat.S_ISDIR(attr.st_mode)
                     color = "#e67e22" if is_dir else "#2ecc71"
                     if highlight and item == highlight: color = "#f1c40f"
-                    
                     lbl = Gtk.Label(xalign=0); lbl.set_markup(f"<span foreground='{color}'>{'📁' if is_dir else '📄'} {item}</span>")
                     row = Gtk.ListBoxRow(); row.add(lbl); row.show_all(); self.r_list.add(row)
                 except: pass
@@ -155,19 +160,22 @@ class HostTerminal(Gtk.Box):
         except Exception as e: self.log_transfer("SFTP", f"Remote Error: {e}")
 
     def on_remote_row_activated(self, listbox, row):
-        # Extract name from markup span
         text = row.get_child().get_label()
         item = re.sub('<[^<]+?>', '', text)[3:]
+        # Feedback: clear list while loading
+        for child in self.r_list.get_children(): self.r_list.remove(child)
+        self.r_list.add(Gtk.Label(label="Loading...", xalign=0.5)); self.r_list.show_all()
+        
         if item == "..":
             self.remote_cwd = os.path.dirname(self.remote_cwd).replace("\\", "/")
             if not self.remote_cwd or self.remote_cwd == ".": self.remote_cwd = "/"
-            self.refresh_sftp()
+            GLib.timeout_add(50, self.refresh_sftp)
         else:
             try:
                 attr = self.sftp.stat(item)
-                if stat.S_ISDIR(attr.st_mode): self.remote_cwd = (self.remote_cwd.rstrip("/") + "/" + item); self.refresh_sftp()
-                else: self.selected_remote = item; self.do_download()
-            except: pass
+                if stat.S_ISDIR(attr.st_mode): self.remote_cwd = (self.remote_cwd.rstrip("/") + "/" + item); GLib.timeout_add(50, self.refresh_sftp)
+                else: self.selected_remote = item; self.do_download(); GLib.timeout_add(50, self.refresh_sftp)
+            except: self.refresh_sftp()
 
     def on_search_clicked(self):
         pattern = self.search_entry.get_text()
@@ -275,7 +283,6 @@ class SSHGui(Gtk.Window):
 
     def refresh_host_list(self):
         self.tree_store.clear(); self.host_configs = {}
-        self.group_combo.remove_all(); self.group_combo.append_text("All Groups"); self.group_combo.set_active(0)
         if os.path.exists("hosts.txt"):
             current_group = "all"; group_iter = None
             with open("hosts.txt", "r") as f:

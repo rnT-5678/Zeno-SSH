@@ -115,12 +115,22 @@ class HostTerminal(ctk.CTkFrame):
         except: pass
 
     def go_home(self):
-        self.remote_cwd = "."
+        # Clear list immediately for feedback
+        for w in self.r_list.winfo_children(): w.destroy()
+        ctk.CTkLabel(self.r_list, text="Navigating Home...").pack()
+        
+        self.remote_cwd = "." # Start with relative home
         if self.sftp:
-            try: self.remote_cwd = self.sftp.normalize(".")
-            except: pass
-        self.refresh_sftp()
-        self.log_transfer("SFTP", "Navigated to Home (~)")
+            try:
+                # Get the absolute path of the home directory
+                self.remote_cwd = self.sftp.normalize(".")
+                self.log_transfer("SFTP", f"Navigating to Home: {self.remote_cwd}")
+            except: 
+                self.remote_cwd = "/" # Fallback to absolute root
+                self.log_transfer("SFTP", "Fallback to absolute root (/)")
+        
+        # Immediate refresh with a small delay to ensure UI updates
+        self.after(100, self.refresh_sftp)
 
     def start_connection(self):
         self.user = self.user_var.get(); self.password = self.pwd_var.get()
