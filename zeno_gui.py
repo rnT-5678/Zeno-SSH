@@ -7,6 +7,7 @@ from scp import SCPClient
 import stat
 import time
 import fnmatch
+import re
 
 gi.require_version('Gtk', '3.0')
 gi.require_version('Vte', '2.91')
@@ -176,14 +177,15 @@ class HostTerminal(Gtk.Box):
     def _search_thread(self, pattern):
         self.log_transfer("SFTP", f"SEARCH: Scanning for '{pattern}'...")
         self.found_first = False
-        def find(path):
+        def find(path, depth=0):
+            if depth > 15: return
             try:
                 for entry in self.sftp.listdir_attr(path):
                     full = (path.rstrip("/") + "/" + entry.filename)
                     if fnmatch.fnmatch(entry.filename.lower(), pattern.lower()) or pattern.lower() in entry.filename.lower():
                         self.log_transfer("SFTP", f"MATCH: {full}", path_jump=path)
                         if not self.found_first: self.found_first = True; self.remote_cwd = path; GLib.idle_add(self.refresh_sftp, entry.filename)
-                    if stat.S_ISDIR(entry.st_mode): find(full)
+                    if stat.S_ISDIR(entry.st_mode): find(full, depth + 1)
             except: pass
         find(self.remote_cwd); self.log_transfer("SFTP", "Search finished.")
 
@@ -273,6 +275,7 @@ class SSHGui(Gtk.Window):
 
     def refresh_host_list(self):
         self.tree_store.clear(); self.host_configs = {}
+        self.group_combo.remove_all(); self.group_combo.append_text("All Groups"); self.group_combo.set_active(0)
         if os.path.exists("hosts.txt"):
             current_group = "all"; group_iter = None
             with open("hosts.txt", "r") as f:
