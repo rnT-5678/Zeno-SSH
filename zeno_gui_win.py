@@ -18,6 +18,7 @@ class HostTerminal(ctk.CTkFrame):
         
         # State
         self.local_cwd = self.base_dir; self.remote_cwd = "."
+        self.initial_home = "." 
         self.selected_local = None; self.selected_remote = None
         self.found_first_match = False
         
@@ -52,9 +53,10 @@ class HostTerminal(ctk.CTkFrame):
         
         # Toolbar
         sftp_tool = ctk.CTkFrame(self.sftp_frame, fg_color="transparent"); sftp_tool.pack(fill="x", pady=5)
-        ctk.CTkButton(sftp_tool, text="🏠 Home", width=70, command=self.go_home).pack(side="left", padx=2)
+        ctk.CTkButton(sftp_tool, text="🏠 Home", width=60, command=self.go_home).pack(side="left", padx=2)
+        ctk.CTkButton(sftp_tool, text="根 Root", width=60, command=self.go_root).pack(side="left", padx=2)
         ctk.CTkButton(sftp_tool, text="⟳ Refresh", width=70, command=self.refresh_sftp).pack(side="left", padx=2)
-        self.search_entry = ctk.CTkEntry(sftp_tool, placeholder_text="Search (e.g. *.log)...", width=200); self.search_entry.pack(side="left", padx=5)
+        self.search_entry = ctk.CTkEntry(sftp_tool, placeholder_text="Search (e.g. *.txt)...", width=200); self.search_entry.pack(side="left", padx=5)
         ctk.CTkButton(sftp_tool, text="🔍 Search", width=80, command=self.sftp_search).pack(side="left")
         
         # Split Explorer
@@ -115,21 +117,17 @@ class HostTerminal(ctk.CTkFrame):
         except: pass
 
     def go_home(self):
-        # Clear list immediately for feedback
+        self.remote_cwd = self.initial_home
+        self.log_transfer("SFTP", f"Navigating to Home (~): {self.remote_cwd}")
         for w in self.r_list.winfo_children(): w.destroy()
-        ctk.CTkLabel(self.r_list, text="Navigating Home...").pack()
-        
-        self.remote_cwd = "." # Start with relative home
-        if self.sftp:
-            try:
-                # Get the absolute path of the home directory
-                self.remote_cwd = self.sftp.normalize(".")
-                self.log_transfer("SFTP", f"Navigating to Home: {self.remote_cwd}")
-            except: 
-                self.remote_cwd = "/" # Fallback to absolute root
-                self.log_transfer("SFTP", "Fallback to absolute root (/)")
-        
-        # Immediate refresh with a small delay to ensure UI updates
+        ctk.CTkLabel(self.r_list, text="Loading...").pack()
+        self.after(100, self.refresh_sftp)
+
+    def go_root(self):
+        self.remote_cwd = "/"
+        self.log_transfer("SFTP", "Navigating to Root (/)")
+        for w in self.r_list.winfo_children(): w.destroy()
+        ctk.CTkLabel(self.r_list, text="Loading...").pack()
         self.after(100, self.refresh_sftp)
 
     def start_connection(self):
@@ -148,7 +146,11 @@ class HostTerminal(ctk.CTkFrame):
             self.client = paramiko.SSHClient(); self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             self.client.connect(self.host, self.port, self.user, self.password, timeout=15, banner_timeout=30)
             self.sftp = self.client.open_sftp(); self.shell = self.client.invoke_shell(term='xterm-256color')
-            self.log_transfer("SFTP", "SUCCESS: Connection established.")
+            # Save the TRUE initial home directory
+            self.initial_home = self.sftp.normalize(".")
+            self.remote_cwd = self.initial_home
+            
+            self.log_transfer("SFTP", f"SUCCESS: Logged in. Home: {self.initial_home}")
             self.after(0, lambda: self.conn_btn.configure(text="Connected"))
             self.after(0, self.refresh_sftp)
             if self.status_callback: self.after(0, lambda: self.status_callback(self.host, "success"))
@@ -165,7 +167,6 @@ class HostTerminal(ctk.CTkFrame):
     def update_local_list(self):
         for w in self.l_list.winfo_children(): w.destroy()
         self.l_path_lbl.configure(text=f"Local: {self.local_cwd}")
-        # Reset scroll to top
         try: self.l_list._parent_canvas.yview_moveto(0)
         except: pass
         try:
@@ -190,7 +191,6 @@ class HostTerminal(ctk.CTkFrame):
         if not self.sftp: return
         for w in self.r_list.winfo_children(): w.destroy()
         self.r_path_lbl.configure(text=f"Remote: {self.remote_cwd}")
-        # Reset scroll to top
         try: self.r_list._parent_canvas.yview_moveto(0)
         except: pass
         try:
@@ -214,7 +214,6 @@ class HostTerminal(ctk.CTkFrame):
             except: pass
 
     def on_remote_double_click(self, item):
-        # Clear list immediately for feedback
         for w in self.r_list.winfo_children(): w.destroy()
         ctk.CTkLabel(self.r_list, text="Loading...").pack()
         if item == "..":
@@ -270,9 +269,10 @@ class HostTerminal(ctk.CTkFrame):
         self.log_transfer("SFTP", f"SEARCH: Scanning for '{pattern}'...")
         self.found_first_match = False
         def find(path, depth=0):
-            if depth > 15: return # Prevent infinite/too deep recursion crash
+            if depth > 20: return # Reasonable depth limit
             try:
                 for entry in self.sftp.listdir_attr(path):
+                    if entry.filename in [".", ".."]: continue # CRITICAL: Skip self and parent to prevent infinite loops
                     full = (path.rstrip("/") + "/" + entry.filename).replace("//", "/")
                     if fnmatch.fnmatch(entry.filename.lower(), pattern.lower()) or pattern.lower() in entry.filename.lower():
                         self.log_transfer("SFTP", f"MATCH: {full}", path_jump=path)
