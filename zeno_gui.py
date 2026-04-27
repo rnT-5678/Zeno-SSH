@@ -20,7 +20,7 @@ class HostTerminal(Gtk.Box):
         self.host = host; self.parent_gui = parent_gui; self.started = False
         self.local_cwd = os.getcwd(); self.remote_cwd = "."
         self.selected_local = None; self.selected_remote = None
-        self.found_first_match = False
+        self.found_first = False; self.is_searching = False
         
         if config:
             self.real_host = config["host"]; self.default_user = config["user"]
@@ -59,8 +59,8 @@ class HostTerminal(Gtk.Box):
         h_btn = Gtk.Button(label="🏠 Home"); h_btn.connect("clicked", lambda x: self.go_home()); sftp_tool.pack_start(h_btn, False, False, 0)
         root_btn = Gtk.Button(label="根 Root"); root_btn.connect("clicked", lambda x: self.go_root()); sftp_tool.pack_start(root_btn, False, False, 0)
         ref_btn = Gtk.Button(label="⟳ Refresh"); ref_btn.connect("clicked", lambda x: self.refresh_sftp()); sftp_tool.pack_start(ref_btn, False, False, 0)
-        self.search_entry = Gtk.Entry(placeholder_text="Search (e.g. *.txt)..."); sftp_tool.pack_start(self.search_entry, True, True, 0)
-        src_btn = Gtk.Button(label="🔍 Search"); src_btn.connect("clicked", lambda x: self.on_search_clicked()); sftp_tool.pack_start(src_btn, False, False, 0)
+        self.search_entry = Gtk.Entry(placeholder_text="Search (e.g. *.txt)..."); self.search_entry.connect("activate", lambda x: self.on_search_clicked()); sftp_tool.pack_start(self.search_entry, True, True, 0)
+        self.search_btn = Gtk.Button(label="🔍 Search"); self.search_btn.connect("clicked", lambda x: self.on_search_clicked()); sftp_tool.pack_start(self.search_btn, False, False, 0)
         sftp_main.pack_start(sftp_tool, False, False, 0)
 
         paned = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
@@ -92,10 +92,7 @@ class HostTerminal(Gtk.Box):
         self.update_local_list()
 
     def go_home(self):
-        self.remote_cwd = "."
-        if self.sftp:
-            try: self.remote_cwd = self.sftp.normalize(".")
-            except: self.remote_cwd = "/"
+        self.remote_cwd = self.initial_home
         self.log_transfer("SFTP", f"Navigating to Home: {self.remote_cwd}")
         for child in self.r_list.get_children(): self.r_list.remove(child)
         self.r_list.add(Gtk.Label(label="Loading...", xalign=0.5)); self.r_list.show_all()
@@ -183,24 +180,38 @@ class HostTerminal(Gtk.Box):
 
     def on_search_clicked(self):
         pattern = self.search_entry.get_text()
-        if not pattern or not self.sftp: return
+        if not pattern or not self.client: return
+        if self.is_searching: return
+        self.is_searching = True
+        self.search_btn.set_sensitive(False); self.search_btn.set_label("Searching...")
         threading.Thread(target=self._search_thread, args=(pattern,), daemon=True).start()
 
     def _search_thread(self, pattern):
         self.log_transfer("SFTP", f"SEARCH: Scanning for '{pattern}'...")
         self.found_first = False
-        def find(path, depth=0):
-            if depth > 15: return
-            try:
-                for entry in self.sftp.listdir_attr(path):
-                    if entry.filename in [".", ".."]: continue
-                    full = (path.rstrip("/") + "/" + entry.filename)
-                    if fnmatch.fnmatch(entry.filename.lower(), pattern.lower()) or pattern.lower() in entry.filename.lower():
-                        self.log_transfer("SFTP", f"MATCH: {full}", path_jump=path)
-                        if not self.found_first: self.found_first = True; self.remote_cwd = path; GLib.idle_add(self.refresh_sftp, entry.filename)
-                    if stat.S_ISDIR(entry.st_mode): find(full, depth + 1)
-            except: pass
-        find(self.remote_cwd); self.log_transfer("SFTP", "Search finished.")
+        try:
+            search_sftp = self.client.open_sftp()
+            def find(path, depth=0):
+                if depth > 15: return
+                try:
+                    for entry in search_sftp.listdir_attr(path):
+                        if entry.filename in [".", ".."]: continue
+                        full = (path.rstrip("/") + "/" + entry.filename)
+                        if fnmatch.fnmatch(entry.filename.lower(), pattern.lower()) or pattern.lower() in entry.filename.lower():
+                            self.log_transfer("SFTP", f"MATCH: {full}", path_jump=path)
+                            if not self.found_first: self.found_first = True; self.remote_cwd = path; GLib.idle_add(self.refresh_sftp, entry.filename)
+                        if stat.S_ISDIR(entry.st_mode): find(full, depth + 1)
+                except: pass
+            find(self.remote_cwd)
+            search_sftp.close()
+            self.log_transfer("SFTP", "SEARCH: Finished.")
+        except Exception as e: self.log_transfer("SFTP", f"SEARCH ERROR: {e}")
+        finally:
+            self.is_searching = False
+            GLib.idle_add(self._search_finished_ui)
+
+    def _search_finished_ui(self):
+        self.search_btn.set_sensitive(True); self.search_btn.set_label("🔍 Search")
 
     def do_upload(self):
         if self.selected_local: self._transfer_op("upload", self.selected_local, (self.remote_cwd.rstrip("/") + "/" + os.path.basename(self.selected_local)))
@@ -232,7 +243,6 @@ class HostTerminal(Gtk.Box):
             self.client = paramiko.SSHClient(); self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             self.client.connect(hostname=self.real_host, port=p_int, username=user, password=pwd, timeout=15, banner_timeout=30)
             self.sftp = self.client.open_sftp(); self.shell = self.client.invoke_shell(term='xterm-256color')
-            # Linux specific initial home
             self.initial_home = self.sftp.normalize(".")
             self.remote_cwd = self.initial_home
             GLib.idle_add(self._on_connected)
@@ -291,8 +301,7 @@ class SSHGui(Gtk.Window):
             self.refresh_host_list()
 
     def refresh_host_list(self):
-        self.tree_store.clear(); self.host_groups = {}; self.host_configs = {}
-        self.group_combo.remove_all(); self.group_combo.append_text("All Groups"); self.group_combo.set_active(0)
+        self.tree_store.clear(); self.host_configs = {}
         if os.path.exists("hosts.txt"):
             current_group = "all"; group_iter = None
             with open("hosts.txt", "r") as f:

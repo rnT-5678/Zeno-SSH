@@ -21,6 +21,7 @@ class HostTerminal(ctk.CTkFrame):
         self.initial_home = "." 
         self.selected_local = None; self.selected_remote = None
         self.found_first_match = False
+        self.is_searching = False
         
         self.ansi_escape = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]|\x1B\].*?(?:\x07|\x1B\\)|\x1B[@-Z\\-_]')
         self.history = []; self.history_index = -1
@@ -57,7 +58,9 @@ class HostTerminal(ctk.CTkFrame):
         ctk.CTkButton(sftp_tool, text="根 Root", width=60, command=self.go_root).pack(side="left", padx=2)
         ctk.CTkButton(sftp_tool, text="⟳ Refresh", width=70, command=self.refresh_sftp).pack(side="left", padx=2)
         self.search_entry = ctk.CTkEntry(sftp_tool, placeholder_text="Search (e.g. *.txt)...", width=200); self.search_entry.pack(side="left", padx=5)
-        ctk.CTkButton(sftp_tool, text="🔍 Search", width=80, command=self.sftp_search).pack(side="left")
+        self.search_entry.bind("<Return>", lambda e: self.sftp_search())
+        self.search_btn = ctk.CTkButton(sftp_tool, text="🔍 Search", width=80, command=self.sftp_search)
+        self.search_btn.pack(side="left")
         
         # Split Explorer
         self.exp_container = ctk.CTkFrame(self.sftp_frame, fg_color="transparent"); self.exp_container.pack(fill="both", expand=True)
@@ -214,6 +217,7 @@ class HostTerminal(ctk.CTkFrame):
             except: pass
 
     def on_remote_double_click(self, item):
+        # Clear list immediately for feedback
         for w in self.r_list.winfo_children(): w.destroy()
         ctk.CTkLabel(self.r_list, text="Loading...").pack()
         if item == "..":
@@ -262,28 +266,40 @@ class HostTerminal(ctk.CTkFrame):
 
     def sftp_search(self):
         pattern = self.search_entry.get().strip()
-        if not pattern or not self.sftp: return
+        if not pattern or not self.client: return
+        if self.is_searching: return
+        self.is_searching = True
+        self.search_btn.configure(text="Searching...", state="disabled")
         threading.Thread(target=self._search_thread, args=(pattern,), daemon=True).start()
 
     def _search_thread(self, pattern):
         self.log_transfer("SFTP", f"SEARCH: Scanning for '{pattern}'...")
         self.found_first_match = False
-        def find(path, depth=0):
-            if depth > 20: return # Reasonable depth limit
-            try:
-                for entry in self.sftp.listdir_attr(path):
-                    if entry.filename in [".", ".."]: continue # CRITICAL: Skip self and parent to prevent infinite loops
-                    full = (path.rstrip("/") + "/" + entry.filename).replace("//", "/")
-                    if fnmatch.fnmatch(entry.filename.lower(), pattern.lower()) or pattern.lower() in entry.filename.lower():
-                        self.log_transfer("SFTP", f"MATCH: {full}", path_jump=path)
-                        if not self.found_first_match:
-                            self.found_first_match = True
-                            self.remote_cwd = path
-                            # Highlight the specific file in the listing
-                            self.after(0, lambda: self.refresh_sftp(highlight=entry.filename))
-                    if stat.S_ISDIR(entry.st_mode): find(full, depth + 1)
-            except: pass
-        find(self.remote_cwd); self.log_transfer("SFTP", "SEARCH: Finished.")
+        try:
+            # Use a separate SFTP channel for search to avoid blocking main browser
+            search_sftp = self.client.open_sftp()
+            def find(path, depth=0):
+                if depth > 20: return
+                try:
+                    for entry in search_sftp.listdir_attr(path):
+                        if entry.filename in [".", ".."]: continue
+                        full = (path.rstrip("/") + "/" + entry.filename).replace("//", "/")
+                        if fnmatch.fnmatch(entry.filename.lower(), pattern.lower()) or pattern.lower() in entry.filename.lower():
+                            self.log_transfer("SFTP", f"MATCH: {full}", path_jump=path)
+                            if not self.found_first_match:
+                                self.found_first_match = True
+                                self.remote_cwd = path
+                                self.after(0, lambda: self.refresh_sftp(highlight=entry.filename))
+                        if stat.S_ISDIR(entry.st_mode): find(full, depth + 1)
+                except: pass
+            find(self.remote_cwd)
+            search_sftp.close()
+            self.log_transfer("SFTP", "SEARCH: Finished.")
+        except Exception as e:
+            self.log_transfer("SFTP", f"SEARCH ERROR: {e}")
+        finally:
+            self.is_searching = False
+            self.after(0, lambda: self.search_btn.configure(text="🔍 Search", state="normal"))
 
     def send_command(self, event=None):
         cmd = self.entry.get(); self.entry.delete(0, 'end')
