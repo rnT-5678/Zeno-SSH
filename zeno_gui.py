@@ -20,6 +20,7 @@ class HostTerminal(Gtk.Box):
         self.host = host; self.parent_gui = parent_gui; self.started = False
         self.local_cwd = os.getcwd(); self.remote_cwd = "."
         self.selected_local = None; self.selected_remote = None
+        self.found_first_match = False
         
         if config:
             self.real_host = config["host"]; self.default_user = config["user"]
@@ -56,8 +57,9 @@ class HostTerminal(Gtk.Box):
         sftp_main = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5); sftp_main.set_margin_all(5)
         sftp_tool = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
         h_btn = Gtk.Button(label="🏠 Home"); h_btn.connect("clicked", lambda x: self.go_home()); sftp_tool.pack_start(h_btn, False, False, 0)
+        root_btn = Gtk.Button(label="根 Root"); root_btn.connect("clicked", lambda x: self.go_root()); sftp_tool.pack_start(root_btn, False, False, 0)
         ref_btn = Gtk.Button(label="⟳ Refresh"); ref_btn.connect("clicked", lambda x: self.refresh_sftp()); sftp_tool.pack_start(ref_btn, False, False, 0)
-        self.search_entry = Gtk.Entry(placeholder_text="Search (e.g. *.log)..."); sftp_tool.pack_start(self.search_entry, True, True, 0)
+        self.search_entry = Gtk.Entry(placeholder_text="Search (e.g. *.txt)..."); sftp_tool.pack_start(self.search_entry, True, True, 0)
         src_btn = Gtk.Button(label="🔍 Search"); src_btn.connect("clicked", lambda x: self.on_search_clicked()); sftp_tool.pack_start(src_btn, False, False, 0)
         sftp_main.pack_start(sftp_tool, False, False, 0)
 
@@ -95,10 +97,15 @@ class HostTerminal(Gtk.Box):
             try: self.remote_cwd = self.sftp.normalize(".")
             except: self.remote_cwd = "/"
         self.log_transfer("SFTP", f"Navigating to Home: {self.remote_cwd}")
-        # Clear list immediately
         for child in self.r_list.get_children(): self.r_list.remove(child)
-        self.r_list.add(Gtk.Label(label="Loading...", xalign=0.5))
-        self.r_list.show_all()
+        self.r_list.add(Gtk.Label(label="Loading...", xalign=0.5)); self.r_list.show_all()
+        GLib.timeout_add(100, self.refresh_sftp)
+
+    def go_root(self):
+        self.remote_cwd = "/"
+        self.log_transfer("SFTP", "Navigating to Root (/)")
+        for child in self.r_list.get_children(): self.r_list.remove(child)
+        self.r_list.add(Gtk.Label(label="Loading...", xalign=0.5)); self.r_list.show_all()
         GLib.timeout_add(100, self.refresh_sftp)
 
     def log_transfer(self, protocol, msg, path_jump=None):
@@ -160,12 +167,9 @@ class HostTerminal(Gtk.Box):
         except Exception as e: self.log_transfer("SFTP", f"Remote Error: {e}")
 
     def on_remote_row_activated(self, listbox, row):
-        text = row.get_child().get_label()
-        item = re.sub('<[^<]+?>', '', text)[3:]
-        # Feedback: clear list while loading
+        text = row.get_child().get_label(); item = re.sub('<[^<]+?>', '', text)[3:]
         for child in self.r_list.get_children(): self.r_list.remove(child)
         self.r_list.add(Gtk.Label(label="Loading...", xalign=0.5)); self.r_list.show_all()
-        
         if item == "..":
             self.remote_cwd = os.path.dirname(self.remote_cwd).replace("\\", "/")
             if not self.remote_cwd or self.remote_cwd == ".": self.remote_cwd = "/"
@@ -189,6 +193,7 @@ class HostTerminal(Gtk.Box):
             if depth > 15: return
             try:
                 for entry in self.sftp.listdir_attr(path):
+                    if entry.filename in [".", ".."]: continue
                     full = (path.rstrip("/") + "/" + entry.filename)
                     if fnmatch.fnmatch(entry.filename.lower(), pattern.lower()) or pattern.lower() in entry.filename.lower():
                         self.log_transfer("SFTP", f"MATCH: {full}", path_jump=path)
@@ -227,6 +232,9 @@ class HostTerminal(Gtk.Box):
             self.client = paramiko.SSHClient(); self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             self.client.connect(hostname=self.real_host, port=p_int, username=user, password=pwd, timeout=15, banner_timeout=30)
             self.sftp = self.client.open_sftp(); self.shell = self.client.invoke_shell(term='xterm-256color')
+            # Linux specific initial home
+            self.initial_home = self.sftp.normalize(".")
+            self.remote_cwd = self.initial_home
             GLib.idle_add(self._on_connected)
             while self.shell:
                 if self.shell.recv_ready(): data = self.shell.recv(8192).decode('utf-8', errors='ignore'); GLib.idle_add(self.append_text, data)
@@ -278,11 +286,13 @@ class SSHGui(Gtk.Window):
 
     def on_save_hosts(self, btn):
         buf = self.host_text_view.get_buffer(); content = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True)
-        with open("hosts.txt", "w") as f: f.write(content)
-        self.refresh_host_list()
+        if content:
+            with open("hosts.txt", "w") as f: f.write(content)
+            self.refresh_host_list()
 
     def refresh_host_list(self):
-        self.tree_store.clear(); self.host_configs = {}
+        self.tree_store.clear(); self.host_groups = {}; self.host_configs = {}
+        self.group_combo.remove_all(); self.group_combo.append_text("All Groups"); self.group_combo.set_active(0)
         if os.path.exists("hosts.txt"):
             current_group = "all"; group_iter = None
             with open("hosts.txt", "r") as f:

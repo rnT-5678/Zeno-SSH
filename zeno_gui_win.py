@@ -279,6 +279,7 @@ class HostTerminal(ctk.CTkFrame):
                         if not self.found_first_match:
                             self.found_first_match = True
                             self.remote_cwd = path
+                            # Highlight the specific file in the listing
                             self.after(0, lambda: self.refresh_sftp(highlight=entry.filename))
                     if stat.S_ISDIR(entry.st_mode): find(full, depth + 1)
             except: pass
